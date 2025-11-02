@@ -1,0 +1,114 @@
+{
+  "categories": [
+    "getting-started",
+    "features",
+    "ideas"
+  ],
+  "files": {
+    "getting-started": {
+      "title": "Getting Started",
+      "description": "Quick start guide to set up ClaraVerse",
+      "category": "getting-started",
+      "order": 1,
+      "filePath": "getting-started/README.md"
+    },
+    "clara-assistant": {
+      "title": "Clara Assistant",
+      "description": "Your AI coding companion",
+      "category": "features",
+      "order": 2,
+      "filePath": "features/clara-assistant.md"
+    },
+    "agents": {
+      "title": "Agents",
+      "description": "AI workflow automation",
+      "category": "features",
+      "order": 3,
+      "filePath": "features/agents.md"
+    },
+    "n8n": {
+      "title": "N8N",
+      "description": "Workflow automation platform",
+      "category": "features",
+      "order": 4,
+      "filePath": "features/n8n.md"
+    },
+    "rag": {
+      "title": "RAG",
+      "description": "Retrieval Augmented Generation",
+      "category": "features",
+      "order": 5,
+      "filePath": "features/rag.md"
+    },
+    "lumaui": {
+      "title": "LumaUI",
+      "description": "AI-powered web development environment",
+      "category": "features",
+      "order": 6,
+      "filePath": "features/lumaui.md"
+    },
+    "imagegen": {
+      "title": "ImageGen",
+      "description": "AI image generation with ComfyUI",
+      "category": "features",
+      "order": 7,
+      "filePath": "features/imagegen.md"
+    },
+    "settings": {
+      "title": "Settings",
+      "description": "Configuration and customization",
+      "category": "features",
+      "order": 8,
+      "filePath": "features/settings.md"
+    },
+    "ideas": {
+      "title": "Ideas: How People Use ClaraVerse",
+      "description": "Real workflows and practical use cases",
+      "category": "ideas",
+      "order": 1,
+      "filePath": "ideas/README.md"
+    },
+    "ai-development-workflow": {
+      "title": "AI-Powered Development Workflow",
+      "description": "From idea to deployed app using the full ecosystem",
+      "category": "ideas",
+      "order": 2,
+      "filePath": "ideas/ai-development-workflow.md"
+    },
+    "content-factory": {
+      "title": "Content Factory",
+      "description": "Automated content creation and publishing pipeline",
+      "category": "ideas",
+      "order": 3,
+      "filePath": "ideas/content-factory.md"
+    },
+    "research-assistant": {
+      "title": "Research Assistant",
+      "description": "Academic research with AI analysis and 3D knowledge mapping",
+      "category": "ideas",
+      "order": 4,
+      "filePath": "ideas/research-assistant.md"
+    },
+    "customer-support": {
+      "title": "Customer Support Bot",
+      "description": "Intelligent support using your company knowledge",
+      "category": "ideas",
+      "order": 5,
+      "filePath": "ideas/customer-support.md"
+    },
+    "personal-brand": {
+      "title": "Personal Brand Builder",
+      "description": "Automated brand development and content creation",
+      "category": "ideas",
+      "order": 6,
+      "filePath": "ideas/personal-brand.md"
+    },
+    "local-code-review": {
+      "title": "Local AI Code Review",
+      "description": "Private code analysis without cloud dependencies",
+      "category": "ideas",
+      "order": 7,
+      "filePath": "ideas/local-code-review.md"
+    }
+  }
+} 

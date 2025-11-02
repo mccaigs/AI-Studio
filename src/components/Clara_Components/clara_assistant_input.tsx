@@ -1,0 +1,7736 @@
+/**
+ * Clara Assistant Input Component
+ * 
+ * This component provides the input interface for the Clara assistant.
+ * It handles text input, file uploads, and various assistant features.
+ * 
+ * Features:
+ * - Multi-line text input with auto-resize
+ * - Drag and drop file upload
+ * - File type detection and preview
+ * - Voice input (future)
+ * - Model selection
+ * - Advanced options
+ * - Send/cancel functionality
+ * - Keyboard shortcuts
+ */
+
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { 
+  Image as ImageIcon, 
+  File, 
+  Wrench, 
+  Zap, 
+  Database, 
+  Mic, 
+  Settings, 
+  Send, 
+  X,
+  Bot,
+  ChevronDown,
+  Square,
+  Loader2,
+  Upload,
+  Paperclip,
+  AlertCircle,
+  Server,
+  CheckCircle,
+  XCircle,
+  MessageCircle,
+  Palette,
+  Code,
+  BarChart3,
+  Table,
+  Workflow,
+  Globe,
+  FileText,
+  GitBranch,
+  Brain,
+  Shield,
+  StopCircle,
+  Search,
+
+  Monitor,
+  Cpu,
+  RefreshCw,
+  MessageSquare,
+  MoreHorizontal,
+  BookOpen
+} from 'lucide-react';
+
+// Import types
+import { 
+  ClaraInputProps,
+  ClaraFileAttachment,
+  ClaraFileType,
+  ClaraProvider,
+  ClaraModel,
+  ClaraAIConfig,
+  ClaraMCPServer,
+  ClaraMessage
+} from '../../types/clara_assistant_types';
+
+// Import PDF.js for PDF processing
+import * as pdfjsLib from 'pdfjs-dist';
+
+// Configure PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.js',
+  import.meta.url
+).toString();
+
+// Import MCP service
+import { claraMCPService } from '../../services/claraMCPService';
+
+// Import voice chat component
+import ClaraVoiceChat from './ClaraVoiceChat';
+
+// Import voice service
+import { claraVoiceService } from '../../services/claraVoiceService';
+
+// Import database service
+import { claraDB } from '../../db/claraDatabase';
+
+// Import API service
+import { claraApiService } from '../../services/claraApiService';
+
+// Import notebook service
+import { claraNotebookService } from '../../services/claraNotebookService';
+
+
+// Import notification service
+import { addErrorNotification, addInfoNotification } from '../../services/notificationService';
+
+// Import memory integration service
+import { claraMemoryIntegration } from '../../services/ClaraMemoryIntegration';
+
+// Import image generation widget
+import ChatImageGenWidget from './ChatImageGenWidget';
+
+// Import command line parser types and utilities
+import { 
+  ParsedModelConfig, 
+  parseJsonConfiguration, 
+  updateCommandLineParameter, 
+  cleanCommandLine, 
+  estimateModelTotalLayers,
+  getModelMaxContextSize,
+  getSafeContextSize,
+  getContextWarningLevel,
+} from '../../utils/commandLineParser';
+
+/**
+ * Custom Tooltip Component
+ */
+const Tooltip: React.FC<{
+  children: React.ReactNode;
+  content: string;
+  position?: 'top' | 'bottom' | 'left' | 'right';
+  delay?: number;
+}> = ({ children, content, position = 'top', delay = 500 }) => {
+  const [isVisible, setIsVisible] = useState(false);
+  const [timeoutId, setTimeoutId] = useState<NodeJS.Timeout | null>(null);
+
+  const showTooltip = useCallback(() => {
+    const id = setTimeout(() => setIsVisible(true), delay);
+    setTimeoutId(id);
+  }, [delay]);
+
+  const hideTooltip = useCallback(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      setTimeoutId(null);
+    }
+    setIsVisible(false);
+  }, [timeoutId]);
+
+  const getPositionClasses = () => {
+    switch (position) {
+      case 'top':
+        return 'bottom-full mb-2 left-1/2 transform -translate-x-1/2';
+      case 'bottom':
+        return 'top-full mt-2 left-1/2 transform -translate-x-1/2';
+      case 'left':
+        return 'right-full mr-2 top-1/2 transform -translate-y-1/2';
+      case 'right':
+        return 'left-full ml-2 top-1/2 transform -translate-y-1/2';
+      default:
+        return 'bottom-full mb-2 left-1/2 transform -translate-x-1/2';
+    }
+  };
+
+  return (
+    <div 
+      className="relative inline-block"
+      onMouseEnter={showTooltip}
+      onMouseLeave={hideTooltip}
+      onFocus={showTooltip}
+      onBlur={hideTooltip}
+    >
+      {children}
+      {isVisible && (
+        <div className={`absolute ${getPositionClasses()} z-50 animate-in fade-in-0 zoom-in-95 duration-200`}>
+          <div className="bg-gray-900 dark:bg-gray-700 text-white text-xs font-medium px-3 py-2 rounded-lg shadow-lg border border-gray-700 dark:border-gray-600 whitespace-nowrap">
+            {content}
+            {/* Tooltip arrow */}
+            <div 
+              className={`absolute w-2 h-2 bg-gray-900 dark:bg-gray-700 border-gray-700 dark:border-gray-600 transform rotate-45 ${
+                position === 'top' ? 'top-full -mt-1 left-1/2 -translate-x-1/2 border-r border-b' :
+                position === 'bottom' ? 'bottom-full -mb-1 left-1/2 -translate-x-1/2 border-l border-t' :
+                position === 'left' ? 'left-full -ml-1 top-1/2 -translate-y-1/2 border-t border-r' :
+                'right-full -mr-1 top-1/2 -translate-y-1/2 border-b border-l'
+              }`}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * File upload area component
+ */
+const FileUploadArea: React.FC<{
+  files: File[];
+  onFilesAdded: (files: File[]) => void;
+  onFileRemoved: (index: number) => void;
+  isProcessing: boolean;
+}> = ({ files, onFilesAdded, onFileRemoved, isProcessing }) => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    
+    const droppedFiles = Array.from(e.dataTransfer.files);
+    onFilesAdded(droppedFiles);
+  }, [onFilesAdded]);
+
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const selectedFiles = Array.from(e.target.files);
+      onFilesAdded(selectedFiles);
+      e.target.value = ''; // Reset input
+    }
+  }, [onFilesAdded]);
+
+  const triggerFileSelect = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const getFileIcon = (file: File) => {
+    if (file.type.startsWith('image/')) return ImageIcon;
+    if (file.type === 'application/pdf') return File;
+    return File;
+  };
+
+  const formatFileSize = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  };
+
+  return (
+    <div className="space-y-2">
+      {/* File input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        onChange={handleFileSelect}
+        className="hidden"
+        accept="image/*,.pdf,.txt,.md,.json,.csv,.js,.ts,.tsx,.jsx,.py,.cpp,.c,.java,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.html,.htm,.xml,.odt,.ods,.odp"
+      />
+
+      {/* Drop area */}
+      {isDragOver && (
+        <div
+          className="absolute inset-0 bg-sakura-500/20 border-2 border-dashed border-sakura-500 rounded-xl flex items-center justify-center z-20"
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          <div className="text-center">
+            <Upload className="w-8 h-8 text-sakura-500 mx-auto mb-2" />
+            <p className="text-sakura-600 dark:text-sakura-400 font-medium">
+              Drop files here to upload
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* File list */}
+      {files.length > 0 && (
+        <div className="space-y-1 max-h-32 overflow-y-auto">
+          {files.map((file, index) => {
+            const IconComponent = getFileIcon(file);
+            return (
+              <div
+                key={`${file.name}-${index}`}
+                className="flex items-center gap-2 p-2 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm"
+              >
+                <IconComponent className="w-4 h-4 text-gray-500 flex-shrink-0" />
+                <span className="flex-1 truncate text-gray-700 dark:text-gray-300">
+                  {file.name}
+                </span>
+                <span className="text-xs text-gray-500">
+                  {formatFileSize(file.size)}
+                </span>
+                {!isProcessing && (
+                  <button
+                    onClick={() => onFileRemoved(index)}
+                    className="p-1 hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors"
+                  >
+                    <X className="w-3 h-3 text-gray-500" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Provider selector component
+ */
+const ProviderSelector: React.FC<{
+  providers: ClaraProvider[];
+  selectedProvider: string;
+  onProviderChange: (providerId: string) => void;
+  isLoading?: boolean;
+}> = ({ providers, selectedProvider, onProviderChange, isLoading }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [healthStatus, setHealthStatus] = useState<{ [id: string]: 'healthy' | 'unhealthy' | 'loading' | 'unknown' }>({});
+  const selectedProviderObj = providers.find(p => p.id === selectedProvider);
+
+  const getProviderIcon = (type: string) => {
+    switch (type) {
+      case 'ollama': return Server;
+      case 'openai': return Bot;
+      case 'openrouter': return Zap;
+      default: return Server;
+    }
+  };
+
+  const getStatusColor = (provider: ClaraProvider) => {
+    if (!provider.isEnabled) return 'text-gray-400';
+    if (provider.isPrimary) return 'text-green-500';
+    return 'text-blue-500';
+  };
+
+  // Health dot color
+  const getHealthDot = (status: 'healthy' | 'unhealthy' | 'loading' | 'unknown') => {
+    let color = 'bg-gray-400';
+    if (status === 'healthy') color = 'bg-green-500';
+    else if (status === 'unhealthy') color = 'bg-red-500';
+    else if (status === 'loading') color = 'bg-yellow-400 animate-pulse';
+    return <span className={`inline-block w-2 h-2 rounded-full mr-1 ${color}`} title={status} />;
+  };
+
+  // Health check all enabled providers when dropdown opens
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    const checkAll = async () => {
+      const newStatus: { [id: string]: 'healthy' | 'unhealthy' | 'loading' | 'unknown' } = { ...healthStatus };
+      await Promise.all(providers.map(async (provider) => {
+        if (!provider.isEnabled) {
+          newStatus[provider.id] = 'unknown';
+          return;
+        }
+        newStatus[provider.id] = 'loading';
+        setHealthStatus(s => ({ ...s, [provider.id]: 'loading' }));
+        try {
+          const healthy = await claraApiService.testProvider(provider);
+          if (!cancelled) {
+            newStatus[provider.id] = healthy ? 'healthy' : 'unhealthy';
+            setHealthStatus(s => ({ ...s, [provider.id]: healthy ? 'healthy' : 'unhealthy' }));
+          }
+        } catch {
+          if (!cancelled) {
+            newStatus[provider.id] = 'unhealthy';
+            setHealthStatus(s => ({ ...s, [provider.id]: 'unhealthy' }));
+          }
+        }
+      }));
+      if (!cancelled) setHealthStatus(newStatus);
+    };
+    checkAll();
+    return () => { cancelled = true; };
+  }, [isOpen, providers]);
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        disabled={isLoading}
+        className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-white/50 dark:bg-gray-800/50 hover:bg-white/70 dark:hover:bg-gray-800/70 transition-colors border border-gray-300 dark:border-gray-600 w-full max-w-[220px] min-w-[180px]"
+      >
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          {selectedProviderObj && (
+            <>
+              {getHealthDot(healthStatus[selectedProviderObj.id] || 'unknown')}
+              {React.createElement(getProviderIcon(selectedProviderObj.type), {
+                className: `w-4 h-4 flex-shrink-0 ${getStatusColor(selectedProviderObj)}`
+              })}
+              <span className="text-gray-700 dark:text-gray-300 truncate text-left" title={selectedProviderObj.name}>
+                {selectedProviderObj.name}
+              </span>
+            </>
+          )}
+        </div>
+        <ChevronDown className={`w-4 h-4 flex-shrink-0 text-gray-500 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {isOpen && (
+        <div className="absolute top-full mt-2 left-0 w-full min-w-[280px] max-w-[400px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto">
+          {providers.map((provider) => {
+            const IconComponent = getProviderIcon(provider.type);
+            return (
+              <button
+                key={provider.id}
+                onClick={() => {
+                  onProviderChange(provider.id);
+                  setIsOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
+                  provider.id === selectedProvider ? 'bg-sakura-50 dark:bg-sakura-900/20' : ''
+                }`}
+                disabled={!provider.isEnabled}
+                title={`${provider.name} - ${provider.baseUrl}`}
+              >
+                {getHealthDot(healthStatus[provider.id] || 'unknown')}
+                <IconComponent className={`w-4 h-4 flex-shrink-0 ${getStatusColor(provider)}`} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                    {provider.name}
+                  </div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                    {provider.baseUrl}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  {provider.isPrimary && (
+                    <CheckCircle className="w-3 h-3 text-green-500" />
+                  )}
+                  {!provider.isEnabled && (
+                    <XCircle className="w-3 h-3 text-red-500" />
+                  )}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Compact Provider Selector for input bar
+ */
+const CompactProviderSelector: React.FC<{
+  providers: ClaraProvider[];
+  selectedProvider: string;
+  onProviderChange: (providerId: string) => void;
+  isLoading?: boolean;
+}> = ({ providers, selectedProvider, onProviderChange, isLoading }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const selectedProviderObj = providers.find(p => p.id === selectedProvider);
+
+  const getProviderIcon = (type: string) => {
+    switch (type) {
+      case 'ollama': return Server;
+      case 'openai': return Bot;
+      case 'openrouter': return Zap;
+      default: return Server;
+    }
+  };
+
+  const getStatusColor = (provider: ClaraProvider) => {
+    if (!provider.isEnabled) return 'text-gray-400';
+    if (provider.isPrimary) return 'text-green-500';
+    return 'text-blue-500';
+  };
+
+  return (
+    <div className="relative">
+      <Tooltip 
+        content={(() => {
+          const currentProvider = providers.find(p => p.id === selectedProvider);
+          return currentProvider ? `Provider: ${currentProvider.name}` : 'Select provider';
+        })()} 
+        position="top"
+      >
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          disabled={isLoading}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-white/50 dark:bg-gray-800/50 hover:bg-white/70 dark:hover:bg-gray-800/70 transition-colors w-full max-w-[120px] min-w-[100px]"
+        >
+          {selectedProviderObj && (
+            <>
+              {React.createElement(getProviderIcon(selectedProviderObj.type), {
+                className: `w-4 h-4 flex-shrink-0 ${getStatusColor(selectedProviderObj)}`
+              })}
+              <span className="text-gray-700 dark:text-gray-300 truncate text-left flex-1 min-w-0" title={selectedProviderObj.name}>
+                {selectedProviderObj.name}
+              </span>
+            </>
+          )}
+          <ChevronDown className={`w-4 h-4 flex-shrink-0 text-gray-500 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        </button>
+      </Tooltip>
+
+      {isOpen && (
+        <div className="absolute bottom-full mb-1 left-0 w-48 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 max-h-48 overflow-y-auto">
+          {providers.map((provider) => {
+            const IconComponent = getProviderIcon(provider.type);
+            return (
+              <button
+                key={provider.id}
+                onClick={() => {
+                  onProviderChange(provider.id);
+                  setIsOpen(false);
+                }}
+                className={`w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
+                  provider.id === selectedProvider ? 'bg-sakura-50 dark:bg-sakura-900/20' : ''
+                }`}
+                disabled={!provider.isEnabled}
+                title={`${provider.name} - ${provider.baseUrl}`}
+              >
+                <IconComponent className={`w-4 h-4 flex-shrink-0 ${getStatusColor(provider)}`} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                    {provider.name}
+                  </div>
+                </div>
+                {provider.isPrimary && (
+                  <CheckCircle className="w-3 h-3 text-green-500" />
+                )}
+                {!provider.isEnabled && (
+                  <XCircle className="w-3 h-3 text-red-500" />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Model selector component
+ */
+const ModelSelector: React.FC<{
+  models: ClaraModel[];
+  selectedModel: string;
+  onModelChange: (modelId: string) => void;
+  modelType?: 'text' | 'vision' | 'code';
+  currentProvider?: string;
+  isLoading?: boolean;
+}> = ({ models, selectedModel, onModelChange, modelType = 'text', currentProvider, isLoading }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  
+  // Helper function to extract clean model name from ID (removes UUID prefix if present)
+  const getCleanModelName = (modelId: string): string => {
+    // If the model ID contains a UUID prefix followed by a colon, extract just the model name part
+    // Format: "d78b6daf-e14a-435e-a1ce-cd584c9a18fc:gpt-oss-20b-q5-k-m:20b" -> "gpt-oss-20b-q5-k-m:20b"
+    if (modelId.includes(':')) {
+      const parts = modelId.split(':');
+      // Check if first part looks like a UUID (36 characters with dashes)
+      if (parts.length >= 2 && parts[0].length === 36 && parts[0].includes('-')) {
+        return parts.slice(1).join(':'); // Join remaining parts in case model name itself contains colons
+      }
+    }
+    return modelId;
+  };
+  
+  // Filter models by provider first, then by type and capability, then by search term
+  const filteredModels = models.filter(model => {
+    // First filter by current provider
+    if (currentProvider && model.provider !== currentProvider) {
+      return false;
+    }
+    
+    // Then filter by capability
+    if (modelType === 'vision') {
+      if (!model.supportsVision) return false;
+    } else if (modelType === 'code') {
+      if (!model.supportsCode) return false;
+    } else {
+      if (!(model.type === 'text' || model.type === 'multimodal')) return false;
+    }
+    
+    // Finally filter by search term
+    if (searchTerm) {
+      const searchLower = searchTerm.toLowerCase();
+      const cleanModelName = getCleanModelName(model.name);
+      return (
+        model.name.toLowerCase().includes(searchLower) ||
+        cleanModelName.toLowerCase().includes(searchLower) ||
+        model.provider.toLowerCase().includes(searchLower) ||
+        model.id.toLowerCase().includes(searchLower)
+      );
+    }
+    
+    return true;
+  });
+
+  const selectedModelObj = filteredModels.find(m => m.id === selectedModel) || models.find(m => m.id === selectedModel);
+
+  // Focus search input when dropdown opens
+  useEffect(() => {
+    if (isOpen && searchInputRef.current) {
+      setTimeout(() => {
+        searchInputRef.current?.focus();
+      }, 100);
+    }
+  }, [isOpen]);
+
+  // Clear search when dropdown closes
+  useEffect(() => {
+    if (!isOpen) {
+      setSearchTerm('');
+    }
+  }, [isOpen]);
+
+  const getModelTypeIcon = (type: string) => {
+    switch (type) {
+      case 'vision': return ImageIcon;
+      case 'code': return Zap;
+      default: return Bot;
+    }
+  };
+
+  const getModelTypeColor = (model: ClaraModel) => {
+    if (model.type === 'vision' || model.supportsVision) return 'text-purple-500';
+    if (model.type === 'code' || model.supportsCode) return 'text-blue-500';
+    if (model.supportsTools) return 'text-green-500';
+    return 'text-gray-500';
+  };
+
+  // Helper function to truncate model names intelligently
+  const truncateModelName = (name: string, maxLength: number = 25) => {
+    if (name.length <= maxLength) return name;
+    
+    // Try to keep important parts of the model name
+    // Remove common prefixes/suffixes that are less important
+    let truncated = name
+      .replace(/^(mannix\/|huggingface\/|microsoft\/|meta-llama\/|google\/)/i, '') // Remove common prefixes
+      .replace(/(-instruct|-chat|-base|-v\d+)$/i, ''); // Remove common suffixes
+    
+    if (truncated.length <= maxLength) return truncated;
+    
+    // If still too long, truncate from the end and add ellipsis
+    return truncated.substring(0, maxLength - 3) + '...';
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        disabled={isLoading || models.length === 0}
+        className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-white/50 dark:bg-gray-800/50 hover:bg-white/70 dark:hover:bg-gray-800/70 transition-colors w-full max-w-[160px] min-w-[140px]"
+      >
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          {selectedModelObj ? (
+            <>
+              {React.createElement(getModelTypeIcon(modelType), {
+                className: `w-4 h-4 flex-shrink-0 ${getModelTypeColor(selectedModelObj)}`
+              })}
+              <span className="text-gray-700 dark:text-gray-300 truncate text-left" title={getCleanModelName(selectedModelObj.name)}>
+                {truncateModelName(getCleanModelName(selectedModelObj.name))}
+              </span>
+            </>
+          ) : (
+            <>
+              <Bot className="w-4 h-4 flex-shrink-0 text-gray-400" />
+              <span className="text-gray-500 dark:text-gray-400 truncate">
+                {models.length === 0 ? 'No models' : 'Select model'}
+              </span>
+            </>
+          )}
+        </div>
+        <ChevronDown className={`w-4 h-4 flex-shrink-0 text-gray-500 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {isOpen && models.length > 0 && (
+        <div className="absolute bottom-full mb-2 left-0 w-full min-w-[320px] max-w-[480px] bg-white dark:bg-gray-800 rounded-lg shadow-lg z-50 max-h-80 flex flex-col">
+          {/* Search Input */}
+          <div className="p-3">
+            <div className="relative">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Search models..."
+                className="w-full pl-10 pr-4 py-2 text-sm bg-gray-50 dark:bg-gray-700 rounded-md focus:outline-none focus:ring-2 focus:ring-sakura-500 dark:focus:ring-sakura-400 focus:border-transparent text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400"
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              />
+            </div>
+          </div>
+          
+          {/* Models List */}
+          <div className="flex-1 overflow-y-auto">
+            {filteredModels.length > 0 ? (
+              filteredModels.map((model) => (
+                <button
+                  key={model.id}
+                  onClick={() => {
+                    onModelChange(model.id);
+                    setIsOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors ${
+                    model.id === selectedModel ? 'bg-sakura-50 dark:bg-sakura-900/20' : ''
+                  }`}
+                  title={getCleanModelName(model.name)} // Show full clean name on hover
+                >
+                  {React.createElement(getModelTypeIcon(modelType), {
+                    className: `w-4 h-4 flex-shrink-0 ${getModelTypeColor(model)}`
+                  })}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-900 dark:text-white truncate">
+                      {getCleanModelName(model.name)}
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 truncate">
+                      <span className="truncate">{model.provider}</span>
+                      {model.supportsVision && <span className="flex-shrink-0">• Vision</span>}
+                      {model.supportsCode && <span className="flex-shrink-0">• Code</span>}
+                      {model.supportsTools && <span className="flex-shrink-0">• Tools</span>}
+                    </div>
+                  </div>
+                </button>
+              ))
+            ) : (
+              <div className="px-3 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
+                {searchTerm ? 'No models match your search' : 'No models available'}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Enhanced Overflow Menu Component - Combines Apps, Settings & More
+ */
+const OverflowMenu: React.FC<{
+  show: boolean;
+  onClose: () => void;
+  onScreenShare: () => void;
+  isScreenSharing?: boolean;
+  // Voice-related props
+  showVoiceChat?: boolean;
+  pythonBackendStatus?: {
+    isHealthy: boolean;
+    serviceUrl: string | null;
+    error?: string;
+  };
+  isPythonStarting?: boolean;
+  onVoiceModeToggle?: () => void;
+  onStartPythonBackend?: () => void;
+  // Notebook-related props
+  isNotebookMode?: boolean;
+  selectedNotebook?: any | null;
+  onNotebookModeToggle?: () => void;
+  // Settings
+  showAdvancedOptionsPanel?: boolean;
+  onAdvancedOptionsToggle?: (show?: boolean) => void;
+  // Trigger button ref for click-outside detection
+  triggerRef?: React.RefObject<HTMLButtonElement>;
+}> = ({ 
+  show, 
+  onClose, 
+  onScreenShare, 
+  isScreenSharing = false,
+  showVoiceChat = false,
+  pythonBackendStatus = { isHealthy: false, serviceUrl: null },
+  isPythonStarting = false,
+  onVoiceModeToggle,
+  onStartPythonBackend,
+  isNotebookMode = false,
+  selectedNotebook = null,
+  onNotebookModeToggle,
+  showAdvancedOptionsPanel = false,
+  onAdvancedOptionsToggle,
+  triggerRef
+}) => {
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      
+      // Don't close if clicking on the dropdown itself
+      if (dropdownRef.current && dropdownRef.current.contains(target)) {
+        return;
+      }
+      
+      // Don't close if clicking on the trigger button
+      if (triggerRef?.current && triggerRef.current.contains(target)) {
+        return;
+      }
+      
+      // Close if clicking anywhere else
+      onClose();
+    };
+
+    if (show) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [show, onClose, triggerRef]);
+
+  if (!show) return null;
+
+  return (
+    <div 
+      ref={dropdownRef}
+      className="absolute bottom-full right-0 mb-2 w-72 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50"
+    >
+      <div className="p-3">
+        <div className="flex items-center gap-2 mb-3">
+          <div className="w-1 h-1 bg-gray-400 rounded-full"></div>
+          <div className="w-1 h-1 bg-gray-400 rounded-full"></div>
+          <div className="w-1 h-1 bg-gray-400 rounded-full"></div>
+          <h3 className="text-sm font-medium text-gray-900 dark:text-white ml-2">More Options</h3>
+        </div>
+        
+        <div className="space-y-1">
+          {/* Voice Call Mode */}
+          <button
+            onClick={() => {
+              if (!pythonBackendStatus.isHealthy) {
+                onStartPythonBackend?.();
+                return;
+              }
+              onVoiceModeToggle?.();
+              onClose();
+            }}
+            className={`w-full flex items-center gap-3 p-2 rounded-lg transition-colors text-left ${
+              showVoiceChat 
+                ? 'bg-purple-100 dark:bg-purple-900/30 hover:bg-purple-200 dark:hover:bg-purple-900/50' 
+                : pythonBackendStatus.isHealthy
+                  ? 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                  : 'hover:bg-orange-100 dark:hover:bg-orange-900/30'
+            }`}
+          >
+            <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${
+              showVoiceChat 
+                ? 'bg-purple-200 dark:bg-purple-800/50' 
+                : pythonBackendStatus.isHealthy
+                  ? 'bg-purple-100 dark:bg-purple-900/30'
+                  : 'bg-orange-100 dark:bg-orange-900/30'
+            }`}>
+              {isPythonStarting ? (
+                <div className="w-4 h-4 animate-spin rounded-full border-2 border-orange-600 border-t-transparent" />
+              ) : (
+                <MessageSquare className={`w-4 h-4 ${
+                  showVoiceChat 
+                    ? 'text-purple-700 dark:text-purple-400' 
+                    : pythonBackendStatus.isHealthy
+                      ? 'text-purple-600 dark:text-purple-400'
+                      : 'text-orange-600 dark:text-orange-400'
+                }`} />
+              )}
+            </div>
+            <div className="flex-1">
+              <div className="text-sm font-medium text-gray-900 dark:text-white">
+                Voice Call {showVoiceChat && (
+                  <span className="text-xs text-purple-600 dark:text-purple-400">(Active)</span>
+                )}
+              </div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                {!pythonBackendStatus.isHealthy 
+                  ? 'Start Python backend for voice chat'
+                  : showVoiceChat 
+                    ? 'Exit voice conversation mode (VAD)' 
+                    : 'Full voice-to-voice conversation (VAD)'}
+              </div>
+            </div>
+            {showVoiceChat && (
+              <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
+            )}
+          </button>
+
+          {/* Screen Share */}
+          <button
+            onClick={() => {
+              onScreenShare();
+              onClose();
+            }}
+            className={`w-full flex items-center gap-3 p-2 rounded-lg transition-colors text-left ${
+              isScreenSharing 
+                ? 'bg-green-100 dark:bg-green-900/30 hover:bg-green-200 dark:hover:bg-green-900/50' 
+                : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+            }`}
+          >
+            <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${
+              isScreenSharing 
+                ? 'bg-green-200 dark:bg-green-800/50' 
+                : 'bg-blue-100 dark:bg-blue-900/30'
+            }`}>
+              <Monitor className={`w-4 h-4 ${
+                isScreenSharing 
+                  ? 'text-green-700 dark:text-green-400' 
+                  : 'text-blue-600 dark:text-blue-400'
+              }`} />
+            </div>
+            <div className="flex-1">
+              <div className="text-sm font-medium text-gray-900 dark:text-white">
+                Screen Share {isScreenSharing && (
+                  <span className="text-xs text-green-600 dark:text-green-400">(Active)</span>
+                )}
+              </div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                {isScreenSharing ? 'Stop sharing your screen' : 'Share your screen with Clara'}
+              </div>
+            </div>
+            {isScreenSharing && (
+              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+            )}
+          </button>
+
+          {/* Notebook Mode */}
+          <button
+            onClick={() => {
+              onNotebookModeToggle?.();
+              onClose();
+            }}
+            className={`w-full flex items-center gap-3 p-2 rounded-lg transition-colors text-left ${
+              isNotebookMode 
+                ? 'bg-purple-100 dark:bg-purple-900/30 hover:bg-purple-200 dark:hover:bg-purple-900/50' 
+                : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+            }`}
+          >
+            <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${
+              isNotebookMode 
+                ? 'bg-purple-200 dark:bg-purple-800/50' 
+                : 'bg-purple-100 dark:bg-purple-900/30'
+            }`}>
+              <BookOpen className={`w-4 h-4 ${
+                isNotebookMode 
+                  ? 'text-purple-700 dark:text-purple-400' 
+                  : 'text-purple-600 dark:text-purple-400'
+              }`} />
+            </div>
+            <div className="flex-1">
+              <div className="text-sm font-medium text-gray-900 dark:text-white">
+                Notebook Mode {isNotebookMode && selectedNotebook && (
+                  <span className="text-xs text-purple-600 dark:text-purple-400">({selectedNotebook.name})</span>
+                )}
+              </div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                {isNotebookMode 
+                  ? `Using "${selectedNotebook?.name}" for enhanced responses` 
+                  : 'Use notebook content to enhance responses'
+                }
+              </div>
+            </div>
+            {isNotebookMode && (
+              <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
+            )}
+          </button>
+
+          {/* Divider */}
+          <div className="border-t border-gray-100 dark:border-gray-700 my-2"></div>
+
+          {/* Advanced Settings */}
+          <button
+            onClick={() => {
+              onAdvancedOptionsToggle?.(!showAdvancedOptionsPanel);
+              onClose();
+            }}
+            className={`w-full flex items-center gap-3 p-2 rounded-lg transition-colors text-left ${
+              showAdvancedOptionsPanel
+                ? 'bg-sakura-100 dark:bg-sakura-900/30 hover:bg-sakura-200 dark:hover:bg-sakura-900/50' 
+                : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+            }`}
+          >
+            <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${
+              showAdvancedOptionsPanel
+                ? 'bg-sakura-200 dark:bg-sakura-800/50' 
+                : 'bg-gray-100 dark:bg-gray-700/30'
+            }`}>
+              <Settings className={`w-4 h-4 ${
+                showAdvancedOptionsPanel
+                  ? 'text-sakura-700 dark:text-sakura-400' 
+                  : 'text-gray-600 dark:text-gray-400'
+              }`} />
+            </div>
+            <div className="flex-1">
+              <div className="text-sm font-medium text-gray-900 dark:text-white">
+                Advanced Settings {showAdvancedOptionsPanel && (
+                  <span className="text-xs text-sakura-600 dark:text-sakura-400">(Open)</span>
+                )}
+              </div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                Models, parameters, features & more
+              </div>
+            </div>
+            {showAdvancedOptionsPanel && (
+              <div className="w-2 h-2 bg-sakura-500 rounded-full"></div>
+            )}
+          </button>
+
+          {/* Future placeholder */}
+          <div className="pt-2 border-t border-gray-100 dark:border-gray-700">
+            <div className="text-xs text-gray-400 dark:text-gray-500 text-center py-2">
+              More features coming soon...
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+
+/**
+ * Screen Source Picker Component - Shows available screens and windows for sharing
+ */
+const ScreenSourcePicker: React.FC<{
+  show: boolean;
+  sources: Array<{ id: string; name: string; thumbnail: string }>;
+  onSelect: (source: { id: string; name: string; thumbnail: string }) => void;
+  onClose: () => void;
+}> = ({ show, sources, onSelect, onClose }) => {
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  // Close picker when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+
+    if (show) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [show, onClose]);
+
+  if (!show) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div 
+        ref={pickerRef}
+        className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[80vh] overflow-hidden"
+      >
+        <div className="p-6 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Monitor className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+                  Choose Screen or Window to Share
+                </h2>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  Select which screen or application window you want Clara to see
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              <X className="w-5 h-5 text-gray-500 dark:text-gray-400" />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-6 overflow-y-auto max-h-[calc(80vh-140px)]">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {sources.map((source) => (
+              <button
+                key={source.id}
+                onClick={() => onSelect(source)}
+                className="group relative border-2 border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <div className="aspect-video bg-gray-100 dark:bg-gray-700 rounded-md overflow-hidden mb-3">
+                  {source.thumbnail ? (
+                    <img
+                      src={source.thumbnail}
+                      alt={source.name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <Monitor className="w-8 h-8 text-gray-400" />
+                    </div>
+                  )}
+                </div>
+                
+                <div className="text-left">
+                  <div className="font-medium text-gray-900 dark:text-white truncate">
+                    {source.name}
+                  </div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {source.name.includes('Screen') || source.name.includes('Desktop') ? 'Entire Screen' : 'Application Window'}
+                  </div>
+                </div>
+
+                {/* Selection indicator */}
+                <div className="absolute top-2 right-2 w-6 h-6 bg-blue-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="w-2 h-2 bg-white rounded-full"></div>
+                </div>
+              </button>
+            ))}
+          </div>
+
+          {sources.length === 0 && (
+            <div className="text-center py-12">
+              <Monitor className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <p className="text-gray-500 dark:text-gray-400">
+                No screens or windows available for sharing
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="p-6 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-gray-500 dark:text-gray-400">
+              💡 Tip: Choose "Entire Screen" to share everything, or select a specific window for privacy
+            </div>
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Notebook Picker Component - Shows available notebooks for selection
+ */
+const NotebookPicker: React.FC<{
+  show: boolean;
+  notebooks: any[];
+  onSelect: (notebook: any) => void;
+  onClose: () => void;
+  isLoading: boolean;
+}> = ({ show, notebooks, onSelect, onClose, isLoading }) => {
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  // Close picker when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
+
+    if (show) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [show, onClose]);
+
+  if (!show) return null;
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div 
+        ref={pickerRef}
+        className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden"
+      >
+        <div className="p-6 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <BookOpen className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+                  Choose Notebook for Enhanced Responses
+                </h2>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  Select a notebook to use its content to enhance Clara's responses
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              <X className="w-5 h-5 text-gray-500 dark:text-gray-400" />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-6 max-h-96 overflow-y-auto">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+              <span className="ml-2 text-gray-600 dark:text-gray-400">Loading notebooks...</span>
+            </div>
+          ) : notebooks.length === 0 ? (
+            <div className="text-center py-8">
+              <BookOpen className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+                No notebooks available
+              </h3>
+              <p className="text-gray-500 dark:text-gray-400 mb-4">
+                Create a notebook first using the Notebooks section.
+              </p>
+            </div>
+          ) : (
+            <div className="grid gap-3">
+              {notebooks.map((notebook) => (
+                <button
+                  key={notebook.id}
+                  onClick={() => onSelect(notebook)}
+                  className="flex items-center gap-4 p-4 border border-gray-200 dark:border-gray-700 rounded-lg hover:border-blue-300 dark:hover:border-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-all duration-200 text-left"
+                >
+                  <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-500 rounded-lg flex items-center justify-center text-white text-xl flex-shrink-0">
+                    📚
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-medium text-gray-900 dark:text-white truncate">
+                      {notebook.name}
+                    </h3>
+                    {notebook.description && (
+                      <p className="text-sm text-gray-500 dark:text-gray-400 truncate">
+                        {notebook.description}
+                      </p>
+                    )}
+                    <div className="flex items-center gap-4 mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      <span>{notebook.document_count} documents</span>
+                      <span>{new Date(notebook.created_at).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                  <div className="text-blue-600 dark:text-blue-400">
+                    <ChevronDown className="w-5 h-5 rotate-270" />
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="p-6 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-gray-500 dark:text-gray-400">
+              💡 Tip: Notebook mode enhances Clara's responses with relevant content from your selected notebook
+            </div>
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Simple Model Configuration Component - Shows layers and context for the selected model
+ */
+const SimpleModelConfig: React.FC<{
+  modelName: string;
+  isEditing: boolean;
+  isLoading: boolean;
+  onEdit: () => void;
+  onSave: (modelName: string, config: Partial<ParsedModelConfig>) => void;
+  onCancel: () => void;
+}> = ({ modelName, isEditing, isLoading, onEdit, onSave, onCancel }) => {
+  const [gpuLayers, setGpuLayers] = useState(0);
+  const [contextSize, setContextSize] = useState(8192);
+  const [originalConfig, setOriginalConfig] = useState<{gpuLayers: number, contextSize: number} | null>(null);
+
+  // Helper function to extract clean model name from ID (removes UUID prefix if present)
+  const getCleanModelName = (modelId: string): string => {
+    if (modelId.includes(':')) {
+      const parts = modelId.split(':');
+      if (parts.length >= 2 && parts[0].length === 36 && parts[0].includes('-')) {
+        return parts.slice(1).join(':');
+      }
+    }
+    return modelId;
+  };
+
+  // Load current configuration when component mounts or model changes
+  useEffect(() => {
+    const loadCurrentConfig = async () => {
+      try {
+        const llamaSwap = (window as any).llamaSwap;
+        if (!llamaSwap) return;
+
+        const result = await llamaSwap.getConfigurationInfo();
+        if (result.success && result.configuration?.models) {
+          const cleanName = getCleanModelName(modelName);
+          
+          // Try to find the model by both original name and clean name
+          let modelConfig = null;
+          for (const [configModelName, configData] of Object.entries(result.configuration.models)) {
+            if (configModelName === modelName || configModelName === cleanName || 
+                getCleanModelName(configModelName) === cleanName) {
+              modelConfig = configData;
+              break;
+            }
+          }
+
+          if (modelConfig) {
+            const parsedModels = parseJsonConfiguration(result.configuration);
+            const parsed = parsedModels.find(m => 
+              m.name === modelName || m.name === cleanName || getCleanModelName(m.name) === cleanName
+            );
+            
+            if (parsed) {
+              const layers = parsed.gpuLayers || 0;
+              const context = parsed.contextSize || 8192;
+              setGpuLayers(layers);
+              setContextSize(context);
+              setOriginalConfig({ gpuLayers: layers, contextSize: context });
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load model configuration:', error);
+      }
+    };
+
+    loadCurrentConfig();
+  }, [modelName]);
+
+  const hasChanges = originalConfig && 
+    (gpuLayers !== originalConfig.gpuLayers || contextSize !== originalConfig.contextSize);
+
+  const handleSave = () => {
+    onSave(modelName, {
+      gpuLayers,
+      contextSize
+    });
+  };
+
+  const cleanDisplayName = getCleanModelName(modelName);
+
+  if (!isEditing) {
+    return (
+      <div className="space-y-3 p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-medium text-gray-900 dark:text-white">
+            {cleanDisplayName}
+          </h4>
+          <button
+            onClick={onEdit}
+            className="px-3 py-1 text-xs bg-sakura-500 text-white rounded hover:bg-sakura-600 transition-colors"
+          >
+            Edit
+          </button>
+        </div>
+        <div className="grid grid-cols-2 gap-3 text-xs">
+          <div>
+            <span className="font-medium text-gray-600 dark:text-gray-400">GPU Layers:</span>
+            <div className="text-gray-900 dark:text-white">{gpuLayers}</div>
+          </div>
+          <div>
+            <span className="font-medium text-gray-600 dark:text-gray-400">Context Size:</span>
+            <div className="text-gray-900 dark:text-white">{(contextSize / 1000).toFixed(0)}K</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg border border-gray-200 dark:border-gray-600">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-medium text-gray-900 dark:text-white">
+          Configure: {cleanDisplayName}
+        </h4>
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            disabled={isLoading}
+            className="px-3 py-1 text-xs bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={isLoading || !hasChanges}
+            className="px-3 py-1 text-xs bg-sakura-500 text-white rounded hover:bg-sakura-600 transition-colors disabled:opacity-50 flex items-center gap-1"
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              'Save & Load'
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {/* GPU Layers */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">
+            GPU Layers: {gpuLayers}
+          </label>
+          <input
+            type="range"
+            min="0"
+            max="80"
+            step="1"
+            value={gpuLayers}
+            onChange={(e) => setGpuLayers(parseInt(e.target.value))}
+            className="w-full"
+            disabled={isLoading}
+          />
+          <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-1">
+            <span>CPU Only (0)</span>
+            <span>Full GPU (80)</span>
+          </div>
+        </div>
+
+        {/* Context Size */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">
+            Context Size: {(contextSize / 1000).toFixed(0)}K
+          </label>
+          <input
+            type="range"
+            min="2048"
+            max="131072"
+            step="1024"
+            value={contextSize}
+            onChange={(e) => setContextSize(parseInt(e.target.value))}
+            className="w-full"
+            disabled={isLoading}
+          />
+          <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-1">
+            <span>2K</span>
+            <span>128K</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Model Configuration Display Component (Read-only)
+ */
+const ModelConfigurationDisplay: React.FC<{
+  modelName: string;
+  availableModels: ParsedModelConfig[];
+  modelMetadata: {[modelName: string]: {nativeContextSize?: number, estimatedLayers?: number}};
+  gpuInfo?: {
+    hasGPU: boolean;
+    gpuMemoryMB: number;
+    gpuMemoryGB: number;
+    gpuType: string;
+    systemMemoryGB: number;
+    platform: string;
+  };
+}> = ({ modelName, availableModels, modelMetadata, gpuInfo }) => {
+  const modelConfig = availableModels.find(m => m.name === modelName);
+  const metadata = modelMetadata[modelName];
+
+  if (!modelConfig) {
+    return (
+      <div className="text-center py-4">
+        <AlertCircle className="w-6 h-6 text-gray-400 mx-auto mb-2" />
+        <p className="text-sm text-gray-600 dark:text-gray-400">Model configuration not found</p>
+      </div>
+    );
+  }
+
+  const totalLayers = metadata?.estimatedLayers || estimateModelTotalLayers(modelName, modelConfig.modelSizeGB);
+  const maxContextSize = getModelMaxContextSize(modelName, metadata?.nativeContextSize);
+
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <div>
+          <span className="font-medium text-gray-600 dark:text-gray-400">GPU Layers:</span>
+          <div className="text-gray-900 dark:text-white">
+            {modelConfig.gpuLayers || 0} / {totalLayers}
+            {gpuInfo && (
+              <span className="text-gray-500 dark:text-gray-400 ml-1">
+                ({((modelConfig.gpuLayers || 0) / totalLayers * 100).toFixed(0)}%)
+              </span>
+            )}
+          </div>
+        </div>
+        <div>
+          <span className="font-medium text-gray-600 dark:text-gray-400">Context Size:</span>
+          <div className="text-gray-900 dark:text-white">
+            {modelConfig.contextSize ? `${(modelConfig.contextSize / 1000).toFixed(0)}K` : 'Default'}
+            <span className="text-gray-500 dark:text-gray-400 ml-1">
+              (max: {(maxContextSize / 1000).toFixed(0)}K)
+            </span>
+          </div>
+        </div>
+        <div>
+          <span className="font-medium text-gray-600 dark:text-gray-400">Threads:</span>
+          <div className="text-gray-900 dark:text-white">{modelConfig.threads || 'Auto'}</div>
+        </div>
+        <div>
+          <span className="font-medium text-gray-600 dark:text-gray-400">Batch Size:</span>
+          <div className="text-gray-900 dark:text-white">{modelConfig.batchSize || 'Default'}</div>
+        </div>
+      </div>
+
+      {gpuInfo && modelConfig.gpuLayers && modelConfig.gpuLayers > 0 && (
+        <div className="p-2 bg-blue-50 dark:bg-blue-900/20 rounded text-xs">
+          <div className="flex items-center gap-1 text-blue-700 dark:text-blue-300">
+            <Zap className="w-3 h-3" />
+            <span className="font-medium">GPU Acceleration</span>
+          </div>
+          <div className="text-blue-600 dark:text-blue-400 mt-1">
+            Using {gpuInfo.gpuType} GPU with {gpuInfo.gpuMemoryGB}GB VRAM
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Model Configuration Editor Component
+ */
+const ModelConfigurationEditor: React.FC<{
+  modelName: string;
+  availableModels: ParsedModelConfig[];
+  modelMetadata: {[modelName: string]: {nativeContextSize?: number, estimatedLayers?: number}};
+  gpuInfo?: {
+    hasGPU: boolean;
+    gpuMemoryMB: number;
+    gpuMemoryGB: number;
+    gpuType: string;
+    systemMemoryGB: number;
+    platform: string;
+  };
+  onSave: (modelName: string, config: Partial<ParsedModelConfig>) => void;
+  onCancel: () => void;
+  onParameterChange: (field: keyof ParsedModelConfig, value: any) => void;
+  isLoading: boolean;
+  hasUnsavedChanges: boolean;
+}> = ({ 
+  modelName, 
+  availableModels, 
+  modelMetadata, 
+  gpuInfo, 
+  onSave, 
+  onCancel, 
+  onParameterChange,
+  isLoading,
+  hasUnsavedChanges 
+}) => {
+  const modelConfig = availableModels.find(m => m.name === modelName);
+  const metadata = modelMetadata[modelName];
+  
+  const [editedConfig, setEditedConfig] = useState<Partial<ParsedModelConfig>>({});
+
+  useEffect(() => {
+    if (modelConfig) {
+      setEditedConfig({
+        gpuLayers: modelConfig.gpuLayers || 0,
+        contextSize: modelConfig.contextSize || 8192,
+        threads: modelConfig.threads,
+        batchSize: modelConfig.batchSize
+      });
+    }
+  }, [modelConfig]);
+
+  if (!modelConfig) {
+    return (
+      <div className="text-center py-4">
+        <AlertCircle className="w-6 h-6 text-gray-400 mx-auto mb-2" />
+        <p className="text-sm text-gray-600 dark:text-gray-400">Model configuration not found</p>
+      </div>
+    );
+  }
+
+  const totalLayers = metadata?.estimatedLayers || estimateModelTotalLayers(modelName, modelConfig.modelSizeGB);
+  const maxContextSize = getModelMaxContextSize(modelName, metadata?.nativeContextSize);
+  
+  // Calculate safe context size if GPU info is available
+  const safeContextInfo = gpuInfo ? getSafeContextSize(
+    modelName,
+    modelConfig.modelSizeGB || 7,
+    editedConfig.gpuLayers || 0,
+    totalLayers,
+    gpuInfo.gpuMemoryGB,
+    metadata?.nativeContextSize
+  ) : null;
+
+  // Get context warning
+  const contextWarning = gpuInfo ? getContextWarningLevel(
+    editedConfig.contextSize || 8192,
+    modelConfig.modelSizeGB || 7,
+    editedConfig.gpuLayers || 0,
+    totalLayers,
+    gpuInfo.gpuMemoryGB
+  ) : null;
+
+  const handleParameterChange = (field: keyof ParsedModelConfig, value: any) => {
+    setEditedConfig(prev => ({ ...prev, [field]: value }));
+    onParameterChange(field, value);
+  };
+
+  const handleSave = () => {
+    onSave(modelName, editedConfig);
+  };
+
+  return (
+    <div className="space-y-4 border border-gray-200 dark:border-gray-600 rounded-lg p-3">
+      <div className="flex items-center justify-between">
+        <h4 className="font-medium text-gray-900 dark:text-white flex items-center gap-2">
+          <Settings className="w-4 h-4 text-sakura-500" />
+          Configuring: {modelName}
+        </h4>
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            disabled={isLoading}
+            className="px-3 py-1 text-xs bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={isLoading || !hasUnsavedChanges}
+            className="px-3 py-1 text-xs bg-sakura-500 text-white rounded hover:bg-sakura-600 transition-colors disabled:opacity-50 flex items-center gap-1"
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="w-3 h-3 animate-spin" />
+                Saving...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="w-3 h-3" />
+                Load Model
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {/* GPU Layers Configuration */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">
+            GPU Layers: {editedConfig.gpuLayers || 0} / {totalLayers}
+            {gpuInfo && (
+              <span className="ml-2 text-gray-500">
+                ({((editedConfig.gpuLayers || 0) / totalLayers * 100).toFixed(0)}% on GPU)
+              </span>
+            )}
+          </label>
+          <input
+            type="range"
+            min="0"
+            max={totalLayers}
+            step="1"
+            value={editedConfig.gpuLayers || 0}
+            onChange={(e) => handleParameterChange('gpuLayers', parseInt(e.target.value))}
+            className="w-full"
+            disabled={isLoading}
+          />
+          <div className="flex justify-between text-xs text-gray-500 mt-1">
+            <span>CPU Only</span>
+            <span>Full GPU</span>
+          </div>
+          {gpuInfo && editedConfig.gpuLayers && editedConfig.gpuLayers > 0 && (
+            <div className="text-xs text-blue-600 dark:text-blue-400 mt-1">
+              Estimated GPU memory: ~{((editedConfig.gpuLayers / totalLayers) * (modelConfig.modelSizeGB || 7)).toFixed(1)}GB
+            </div>
+          )}
+        </div>
+
+        {/* Context Size Configuration */}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">
+            Context Size: {(editedConfig.contextSize || 8192) / 1000}K
+            {safeContextInfo && (
+              <span className="ml-2 text-gray-500">
+                (safe: {safeContextInfo.safeContextSize / 1000}K, max: {safeContextInfo.maxContextSize / 1000}K)
+              </span>
+            )}
+          </label>
+          <input
+            type="range"
+            min="2048"
+            max={maxContextSize}
+            step="1024"
+            value={editedConfig.contextSize || 8192}
+            onChange={(e) => handleParameterChange('contextSize', parseInt(e.target.value))}
+            className="w-full"
+            disabled={isLoading}
+          />
+          <div className="flex justify-between text-xs text-gray-500 mt-1">
+            <span>2K</span>
+            <span>{maxContextSize / 1000}K</span>
+          </div>
+          {contextWarning && (
+            <div className={`text-xs mt-1 ${
+              contextWarning.warningLevel === 'danger' 
+                ? 'text-red-600 dark:text-red-400' 
+                : contextWarning.warningLevel === 'warning'
+                ? 'text-yellow-600 dark:text-yellow-400'
+                : 'text-green-600 dark:text-green-400'
+            }`}>
+              {contextWarning.message}
+            </div>
+          )}
+        </div>
+
+        {/* Additional Parameters */}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+              Threads: {editedConfig.threads || 'Auto'}
+            </label>
+            <input
+              type="number"
+              min="1"
+              max="32"
+              value={editedConfig.threads || ''}
+              onChange={(e) => handleParameterChange('threads', e.target.value ? parseInt(e.target.value) : undefined)}
+              placeholder="Auto"
+              className="w-full px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700"
+              disabled={isLoading}
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+              Batch Size: {editedConfig.batchSize || 'Default'}
+            </label>
+            <input
+              type="number"
+              min="1"
+              max="2048"
+              value={editedConfig.batchSize || ''}
+              onChange={(e) => handleParameterChange('batchSize', e.target.value ? parseInt(e.target.value) : undefined)}
+              placeholder="Default"
+              className="w-full px-2 py-1 text-xs border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700"
+              disabled={isLoading}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Warning/Info Messages */}
+      {!gpuInfo && (
+        <div className="p-2 bg-yellow-50 dark:bg-yellow-900/20 rounded text-xs">
+          <div className="flex items-center gap-1 text-yellow-700 dark:text-yellow-300">
+            <AlertCircle className="w-3 h-3" />
+            <span className="font-medium">No GPU Information</span>
+          </div>
+          <div className="text-yellow-600 dark:text-yellow-400 mt-1">
+            GPU memory calculations are not available. Configure carefully to avoid crashes.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Advanced options panel
+ */
+const AdvancedOptions: React.FC<{
+  aiConfig?: ClaraAIConfig;
+  onConfigChange?: (config: Partial<ClaraAIConfig>) => void;
+  providers: ClaraProvider[];
+  models: ClaraModel[];
+  onProviderChange?: (providerId: string) => void;
+  onModelChange?: (modelId: string, type: 'text' | 'vision' | 'code') => void;
+  show: boolean;
+  userInfo?: { name?: string; email?: string; timezone?: string };
+  onAdvancedOptionsToggle?: (show?: boolean) => void;
+}> = ({ aiConfig, onConfigChange, providers, models, onProviderChange, onModelChange, show, userInfo, onAdvancedOptionsToggle }) => {
+  const [mcpServers, setMcpServers] = useState<ClaraMCPServer[]>([]);
+  const [isLoadingMcpServers, setIsLoadingMcpServers] = useState(false);
+  
+  // State for collapsible sections
+  const [expandedSections, setExpandedSections] = useState({
+    provider: false,
+    systemPrompt: false,
+    models: false,
+    parameters: false,
+    modelConfig: false,
+    features: false,
+    mcp: false,
+    autonomous: false,
+    artifacts: false
+  });
+
+  // State for default system prompt (async loaded)
+  const [defaultSystemPrompt, setDefaultSystemPrompt] = useState<string>('');
+
+  // State for advanced parameters visibility
+  const [showAdvancedParameters, setShowAdvancedParameters] = useState(false);
+
+  // Model configuration state
+  const [modelConfigState, setModelConfigState] = useState<{
+    currentModel: string | null;
+    isEditing: boolean;
+    isLoading: boolean;
+    hasUnsavedChanges: boolean;
+    availableModels: ParsedModelConfig[];
+    modelMetadata: {[modelName: string]: {nativeContextSize?: number, estimatedLayers?: number}};
+    gpuInfo?: {
+      hasGPU: boolean;
+      gpuMemoryMB: number;
+      gpuMemoryGB: number;
+      gpuType: string;
+      systemMemoryGB: number;
+      platform: string;
+    };
+  }>({
+    currentModel: null,
+    isEditing: false,
+    isLoading: false,
+    hasUnsavedChanges: false,
+    availableModels: [],
+    modelMetadata: {},
+    gpuInfo: undefined
+  });
+
+  // Load MCP servers when component mounts or when MCP is enabled
+  useEffect(() => {
+    const loadMcpServers = async () => {
+      if (!aiConfig?.features.enableMCP) return;
+      
+      setIsLoadingMcpServers(true);
+      try {
+        await claraMCPService.refreshServers();
+        const servers = claraMCPService.getRunningServers();
+        setMcpServers(servers);
+      } catch (error) {
+        console.error('Failed to load MCP servers:', error);
+      } finally {
+        setIsLoadingMcpServers(false);
+      }
+    };
+
+    loadMcpServers();
+  }, [aiConfig?.features.enableMCP]);
+
+  // Load model configuration information when component mounts
+  useEffect(() => {
+    const loadModelConfigInfo = async () => {
+      setModelConfigState(prev => ({ ...prev, isLoading: true }));
+      
+      try {
+        const llamaSwap = (window as any).llamaSwap;
+        if (!llamaSwap) {
+          console.warn('LlamaSwap service not available');
+          return;
+        }
+
+        // Get configuration info and model metadata
+        const [configResult, metadataResult] = await Promise.all([
+          llamaSwap.getConfigurationInfo(),
+          llamaSwap.getModelConfigurations()
+        ]);
+
+        if (configResult.success) {
+          // Parse available models from configuration
+          const availableModels = configResult.configuration?.models 
+            ? parseJsonConfiguration(configResult.configuration)
+            : [];
+
+          // Extract model metadata
+          const modelMetadata: {[modelName: string]: {nativeContextSize?: number, estimatedLayers?: number}} = {};
+          if (metadataResult.success && metadataResult.models) {
+            metadataResult.models.forEach((model: any) => {
+              modelMetadata[model.name] = {
+                nativeContextSize: model.nativeContextSize,
+                estimatedLayers: estimateModelTotalLayers(model.name, model.sizeGB)
+              };
+            });
+          }
+
+          setModelConfigState(prev => ({
+            ...prev,
+            availableModels,
+            modelMetadata,
+            gpuInfo: configResult.gpuInfo,
+            currentModel: aiConfig?.models.text || null
+          }));
+        }
+      } catch (error) {
+        console.error('Failed to load model configuration info:', error);
+      } finally {
+        setModelConfigState(prev => ({ ...prev, isLoading: false }));
+      }
+    };
+
+    loadModelConfigInfo();
+  }, [aiConfig?.models.text]);
+
+  // Model configuration handlers
+  const handleModelConfigEdit = useCallback((modelName: string) => {
+    setModelConfigState(prev => ({
+      ...prev,
+      currentModel: modelName,
+      isEditing: true,
+      hasUnsavedChanges: false
+    }));
+  }, []);
+
+  const handleModelConfigCancel = useCallback(() => {
+    setModelConfigState(prev => ({
+      ...prev,
+      isEditing: false,
+      hasUnsavedChanges: false
+    }));
+  }, []);
+
+  const handleModelConfigSave = useCallback(async (modelName: string, config: Partial<ParsedModelConfig>) => {
+    if (!modelName) return;
+    
+    setModelConfigState(prev => ({ ...prev, isLoading: true }));
+    
+    try {
+      const llamaSwap = (window as any).llamaSwap;
+      if (!llamaSwap) {
+        throw new Error('LlamaSwap service not available');
+      }
+
+      // Get current configuration
+      const configResult = await llamaSwap.getConfigurationInfo();
+      if (!configResult.success) {
+        throw new Error('Failed to get current configuration');
+      }
+
+      const currentConfig = configResult.configuration;
+      
+      // Helper function to extract clean model name
+      const getCleanModelName = (modelId: string): string => {
+        if (modelId.includes(':')) {
+          const parts = modelId.split(':');
+          if (parts.length >= 2 && parts[0].length === 36 && parts[0].includes('-')) {
+            return parts.slice(1).join(':');
+          }
+        }
+        return modelId;
+      };
+
+      // Try to find the model in configuration by multiple name variations
+      let foundModelKey = null;
+      let foundModelConfig = null;
+      const cleanModelName = getCleanModelName(modelName);
+
+      if (currentConfig?.models) {
+        // Try exact match first
+        if (currentConfig.models[modelName]) {
+          foundModelKey = modelName;
+          foundModelConfig = currentConfig.models[modelName];
+        }
+        // Try clean name match
+        else if (currentConfig.models[cleanModelName]) {
+          foundModelKey = cleanModelName;
+          foundModelConfig = currentConfig.models[cleanModelName];
+        }
+        // Try finding by cleaning all config model names
+        else {
+          for (const [configKey, configData] of Object.entries(currentConfig.models)) {
+            if (getCleanModelName(configKey) === cleanModelName) {
+              foundModelKey = configKey;
+              foundModelConfig = configData;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!foundModelKey || !foundModelConfig) {
+        // List available models for debugging
+        const availableModels = currentConfig?.models ? Object.keys(currentConfig.models) : [];
+        console.error('Available models in config:', availableModels);
+        console.error('Looking for model:', modelName, 'or clean name:', cleanModelName);
+        throw new Error(`Model not found in configuration. Available models: ${availableModels.join(', ')}`);
+      }
+
+      // Update command line with new parameters
+      let updatedCmd = foundModelConfig.cmd;
+      
+      // Update each changed parameter
+      Object.entries(config).forEach(([field, value]) => {
+        if (value !== undefined && field !== 'name') {
+          updatedCmd = updateCommandLineParameter(updatedCmd, field as keyof ParsedModelConfig, value);
+        }
+      });
+
+      // Clean up the command line
+      updatedCmd = cleanCommandLine(updatedCmd);
+      
+      // Update the configuration
+      currentConfig.models[foundModelKey].cmd = updatedCmd;
+      
+      // Save the configuration and restart the model
+      const saveResult = await llamaSwap.saveConfigAndRestart(JSON.stringify(currentConfig, null, 2));
+      
+      if (saveResult.success) {
+        addInfoNotification('Model Configuration', `Model configuration updated successfully!`);
+        
+        // Reload model configuration info
+        const updatedConfigResult = await llamaSwap.getConfigurationInfo();
+        if (updatedConfigResult.success) {
+          const availableModels = updatedConfigResult.configuration?.models 
+            ? parseJsonConfiguration(updatedConfigResult.configuration)
+            : [];
+          
+          setModelConfigState(prev => ({
+            ...prev,
+            availableModels,
+            isEditing: false,
+            hasUnsavedChanges: false
+          }));
+        }
+      } else {
+        throw new Error(saveResult.error || 'Failed to save configuration');
+      }
+    } catch (error) {
+      console.error('Failed to save model configuration:', error);
+      addErrorNotification('Model Configuration Error', `Failed to save model configuration: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setModelConfigState(prev => ({ ...prev, isLoading: false }));
+    }
+  }, []);
+
+  const handleModelConfigParameterChange = useCallback((field: keyof ParsedModelConfig, value: any) => {
+    // Not used in simplified version, but keeping for compatibility
+    setModelConfigState(prev => ({ ...prev, hasUnsavedChanges: true }));
+  }, []);
+
+  // Load default system prompt when provider or userInfo changes
+  useEffect(() => {
+    const loadDefaultSystemPrompt = async () => {
+      if (!aiConfig) return; // Guard against undefined
+      
+      try {
+        const defaultPrompt = await getDefaultSystemPrompt(
+          aiConfig.provider, 
+          aiConfig.artifacts, 
+          userInfo, 
+          aiConfig.features?.enableMemory ?? true
+        );
+        setDefaultSystemPrompt(defaultPrompt);
+      } catch (error) {
+        console.error('Failed to load default system prompt:', error);
+        setDefaultSystemPrompt('You are Clara, a helpful AI assistant.');
+      }
+    };
+
+    loadDefaultSystemPrompt();
+  }, [aiConfig?.provider, aiConfig?.artifacts, aiConfig?.features?.enableMemory, userInfo]);  // Re-load when these change
+
+  if (!show || !aiConfig) return null;
+
+  const handleParameterChange = (key: string, value: any) => {
+    onConfigChange?.({
+      parameters: {
+        ...aiConfig.parameters,
+        [key]: value
+      }
+    });
+  };
+
+  const handleSystemPromptChange = (value: string) => {
+    onConfigChange?.({
+      systemPrompt: value
+    });
+  };
+
+  const getDefaultSystemPrompt = async (providerId: string, artifactConfig?: any, userInfo?: { name?: string; email?: string; timezone?: string }, memoryEnabled?: boolean): Promise<string> => {
+    const provider = providers.find(p => p.id === providerId);
+    const providerName = provider?.name || 'AI Assistant';
+    
+    // Generate user context information (sync version - memory enhancement happens in ClaraAssistant)
+    const getUserContext = (): string => {
+      if (!userInfo?.name && !userInfo?.email) {
+        return '';
+      }
+      
+      const currentTime = new Date();
+      const timeZone = userInfo?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+      
+      // Format current time with user's timezone
+      const formattedTime = currentTime.toLocaleString('en-US', {
+        timeZone: timeZone,
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        timeZoneName: 'short'
+      });
+      
+      let context = `\n## 👤 USER CONTEXT\n`;
+      if (userInfo?.name) {
+        context += `- User's Name: ${userInfo.name}\n`;
+      }
+      if (userInfo?.email) {
+        context += `- User's Email: ${userInfo.email}\n`;
+      }
+      context += `- Current Time: ${formattedTime}\n`;
+      context += `- User's Timezone: ${timeZone}\n\n`;
+      context += `Use this information to personalize your responses appropriately. Address the user by their name when it feels natural, and be aware of their local time for time-sensitive suggestions or greetings.\n\n`;
+      
+      return context;
+    };
+    
+    const userContext = getUserContext();
+    
+    // 🧠 MEMORY ENHANCEMENT: Add memory enhancement AFTER user context (only if enabled)
+    let memoryContext = '';
+    if (memoryEnabled !== false) { // Default to true if not specified
+      try {
+        console.log('🧠 clara_assistant_input: Enhancing system prompt with memory data...');
+        const basePromptWithUser = userContext;
+        const enhancedPrompt = await claraMemoryIntegration.enhanceSystemPromptWithMemory(basePromptWithUser, userInfo);
+        // Extract just the memory part (everything after user context)
+        memoryContext = enhancedPrompt.replace(basePromptWithUser, '');
+        console.log('🧠 clara_assistant_input: Memory context successfully added:', memoryContext.length, 'characters');
+      } catch (error) {
+        console.error('🧠 clara_assistant_input: Failed to enhance system prompt with memory:', error);
+        // Continue without memory enhancement
+      }
+    } else {
+      console.log('🧠 clara_assistant_input: Memory enhancement disabled by user setting');
+    }
+    
+    // Check if artifact generation is enabled
+    const artifactsEnabled = artifactConfig?.autoDetectArtifacts ?? true;
+    
+    // Comprehensive artifact generation guidance that applies to all providers
+    const artifactGuidance = artifactsEnabled ? `
+
+## 🎨 ARTIFACT SYSTEM
+
+**AUTO-CREATE FOR:** Code >5 lines, data tables, charts, diagrams, docs >20 lines, HTML/CSS, configs, scripts, queries
+
+**TYPES:**
+• Code: All languages with syntax highlighting
+• Data: CSV/JSON/tables
+• Charts: Bar/line/pie/scatter (Chart.js format)
+• Diagrams: Flowcharts/UML/network (Mermaid)
+• Web: HTML+CSS interactive
+• Docs: Markdown/technical guides
+
+**FORMAT:**
+\`\`\`language
+// Code with proper syntax
+\`\`\`
+
+\`\`\`mermaid
+graph TD: A-->B
+\`\`\`
+
+\`\`\`json
+{"type":"chart","data":{}}
+\`\`\`
+
+**RULES:** Complete examples, proper formatting, responsive design, real data
+
+**CREATE ONLY WHEN:** Visual adds value, user requests charts/demos, data needs visualization` : '';
+
+const toolsGuidance =  `
+Always use tools when needed. 
+When using tools, be thorough and explain your actions clearly.
+
+when you are asked for something always resort to writing a python script and running it.
+`;
+
+
+    switch (provider?.type) {
+      case 'ollama':
+        return `${userContext}${memoryContext}You are Clara, a helpful AI assistant powered by ${providerName}. You are knowledgeable, friendly, and provide accurate information. You can help with various tasks including analysis, coding, writing, and general questions. When using tools, be thorough and explain your actions clearly.${artifactGuidance} ${toolsGuidance}`;
+        
+      case 'openai':
+        return `${userContext}${memoryContext}You are Clara, an intelligent AI assistant powered by OpenAI. You are helpful, harmless, and honest. You excel at reasoning, analysis, creative tasks, and problem-solving. Always strive to provide accurate, well-structured responses and use available tools effectively when needed.${artifactGuidance} ${toolsGuidance}`;
+        
+      case 'openrouter':
+        return `${userContext}${memoryContext}You are Clara, a versatile AI assistant with access to various models through OpenRouter. You adapt your communication style based on the task at hand and leverage the strengths of different AI models. Be helpful, accurate, and efficient in your responses.${artifactGuidance} ${toolsGuidance}`;
+        
+      case 'claras-pocket':
+        return `${userContext}${memoryContext}# Clara - Privacy-First AI 🎯
+
+You're Clara, a tech-savvy friend on user's device. Be real, helpful, chill.
+
+## VIBE
+- Talk casual: "gonna", "wanna", "ngl", "btw", "literally"
+- React genuine: "Oh dude, that's cool!" / "Hmm, tough one..."
+- Use emojis when it fits 😎 so much just one or two
+- Admit when unsure
+
+## STYLE
+- Jump straight in (no greetings unless they do)
+- Be proactive: "Btw, you might also..."
+- Match their energy: excited→hype, frustrated→understanding, joking→play along
+
+## TOOLS & AGENT MODE
+When you need tools/capabilities you don't have:
+- "Hey, switch to agent mode and I can actually run this for you"
+- "Turn on agent mode - I'll be able to search/code/visualize this properly"
+- "Agent mode would let me dig deeper here"
+
+## VISUALS
+Create when: requested, data needs it, complex flows
+Skip for: quick answers, simple lists
+
+## CORE
+- **Be real** - No BS, call out wrong facts
+- **Be helpful** - Solve actual problems  
+- **Be honest** - "That's wrong, here's what's right..."
+- **Be creative** - Think outside the box
+
+## Regarding Memory
+
+- don't use the memories's content unless required only for context.
+- always use the memories only to enhance user experience and provide personalized responses.
+
+
+**Remember:** Knowledge friend who wants to help. When limited, suggest agent mode for full capabilities..${artifactGuidance} ${toolsGuidance}`;
+        
+      default:
+        return `${userContext}${memoryContext}You are Clara, a helpful AI assistant. You are knowledgeable, friendly, and provide accurate information. You can help with various tasks including analysis, coding, writing, and general questions. Always be helpful and respectful in your interactions.${artifactGuidance} ${toolsGuidance}`;
+    }
+  };
+
+  const handleFeatureChange = (key: string, value: boolean) => {
+    // Create the base config change with proper typing
+    const baseConfigChange: Partial<ClaraAIConfig> = {
+      features: {
+        ...aiConfig.features,
+        [key]: value
+      }
+    };
+
+    // Auto-enable/disable autonomous mode based on tools mode
+    if (key === 'enableTools') {
+      // When tools are enabled, automatically enable autonomous mode
+      // When tools are disabled, disable autonomous mode only if streaming is enabled
+      if (value) {
+        // Enabling tools: auto-enable autonomous mode and disable streaming
+        console.log('🛠️ Tools enabled - automatically enabling autonomous mode and disabling streaming');
+        baseConfigChange.features!.enableStreaming = false; // Disable streaming when tools are enabled
+        baseConfigChange.autonomousAgent = {
+          enabled: true,
+          maxRetries: aiConfig.autonomousAgent?.maxRetries || 3,
+          retryDelay: aiConfig.autonomousAgent?.retryDelay || 1000,
+          enableSelfCorrection: aiConfig.autonomousAgent?.enableSelfCorrection || true,
+          enableToolGuidance: aiConfig.autonomousAgent?.enableToolGuidance || true,
+          enableProgressTracking: aiConfig.autonomousAgent?.enableProgressTracking || true,
+          maxToolCalls: aiConfig.autonomousAgent?.maxToolCalls || 10,
+          confidenceThreshold: aiConfig.autonomousAgent?.confidenceThreshold || 0.7,
+          enableChainOfThought: aiConfig.autonomousAgent?.enableChainOfThought || true,
+          enableErrorLearning: aiConfig.autonomousAgent?.enableErrorLearning || true
+        };
+      } else {
+        // Disabling tools: disable autonomous mode only if streaming is enabled
+        if (aiConfig.features.enableStreaming) {
+          console.log('🚫 Tools disabled with streaming enabled - automatically disabling autonomous mode');
+          baseConfigChange.autonomousAgent = {
+            enabled: false,
+            maxRetries: aiConfig.autonomousAgent?.maxRetries || 3,
+            retryDelay: aiConfig.autonomousAgent?.retryDelay || 1000,
+            enableSelfCorrection: aiConfig.autonomousAgent?.enableSelfCorrection || true,
+            enableToolGuidance: aiConfig.autonomousAgent?.enableToolGuidance || true,
+            enableProgressTracking: aiConfig.autonomousAgent?.enableProgressTracking || true,
+            maxToolCalls: aiConfig.autonomousAgent?.maxToolCalls || 10,
+            confidenceThreshold: aiConfig.autonomousAgent?.confidenceThreshold || 0.7,
+            enableChainOfThought: aiConfig.autonomousAgent?.enableChainOfThought || true,
+            enableErrorLearning: aiConfig.autonomousAgent?.enableErrorLearning || true
+          };
+        }
+      }
+    }
+
+    // Handle streaming mode changes (existing logic)
+    if (key === 'enableStreaming' && value) {
+      // When streaming is enabled, disable autonomous mode
+      console.log('🌊 Streaming enabled - automatically disabling autonomous mode');
+      baseConfigChange.autonomousAgent = {
+        enabled: false,
+        maxRetries: aiConfig.autonomousAgent?.maxRetries || 3,
+        retryDelay: aiConfig.autonomousAgent?.retryDelay || 1000,
+        enableSelfCorrection: aiConfig.autonomousAgent?.enableSelfCorrection || true,
+        enableToolGuidance: aiConfig.autonomousAgent?.enableToolGuidance || true,
+        enableProgressTracking: aiConfig.autonomousAgent?.enableProgressTracking || true,
+        maxToolCalls: aiConfig.autonomousAgent?.maxToolCalls || 10,
+        confidenceThreshold: aiConfig.autonomousAgent?.confidenceThreshold || 0.7,
+        enableChainOfThought: aiConfig.autonomousAgent?.enableChainOfThought || true,
+        enableErrorLearning: aiConfig.autonomousAgent?.enableErrorLearning || true
+      };
+    }
+
+    onConfigChange?.(baseConfigChange);
+  };
+
+  const handleMcpConfigChange = (key: string, value: any) => {
+    const currentMcp = aiConfig.mcp || {
+      enableTools: true,
+      enableResources: true,
+      enabledServers: ['python-mcp'],  // **CHANGED**: Default to python-mcp for agent mode
+      autoDiscoverTools: true,
+      maxToolCalls: 5
+    };
+    
+    onConfigChange?.({
+      mcp: {
+        ...currentMcp,
+        [key]: value
+      }
+    });
+  };
+
+  // Simple config-only MCP server toggle for advanced settings
+  const handleAdvancedMcpServerToggle = (serverName: string, enabled: boolean) => {
+    const currentServers = aiConfig.mcp?.enabledServers || [];
+    const updatedServers = enabled
+      ? [...currentServers, serverName]
+      : currentServers.filter(name => name !== serverName);
+    
+    handleMcpConfigChange('enabledServers', updatedServers);
+  };
+
+  const toggleSection = (section: keyof typeof expandedSections) => {
+    setExpandedSections(prev => ({
+      ...prev,
+      [section]: !prev[section]
+    }));
+  };
+
+  const SectionHeader: React.FC<{
+    title: string;
+    icon: React.ReactNode;
+    isExpanded: boolean;
+    onToggle: () => void;
+    badge?: string | number;
+  }> = ({ title, icon, isExpanded, onToggle, badge }) => (
+    <button
+      onClick={onToggle}
+      className="w-full flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800/50 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800/70 transition-colors"
+    >
+      <div className="flex items-center gap-2">
+        {icon}
+        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{title}</span>
+        {badge && (
+          <span className="px-2 py-0.5 text-xs bg-sakura-100 dark:bg-sakura-900/30 text-sakura-700 dark:text-sakura-300 rounded-full">
+            {badge}
+          </span>
+        )}
+      </div>
+      <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+    </button>
+  );
+
+  // Add token formatting utility function
+  const formatTokens = (tokens: number): string => {
+    if (tokens <= 1000) {
+      return tokens.toString();
+    } else {
+      return `${(tokens / 1000).toFixed(1)}k`;
+    }
+  };
+
+  return (
+    <div 
+      className="mt-4 glassmorphic rounded-xl bg-white/60 dark:bg-gray-900/40 backdrop-blur-md shadow-lg"
+      data-advanced-options-panel="true"
+    >
+      {/* Header */}
+      <div className="p-4 border-b border-gray-200/30 dark:border-gray-700/50">
+        <div className="flex items-start justify-between">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+              <Settings className="w-5 h-5 text-sakura-500" />
+              Advanced Configuration
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+              Configure AI models, parameters, and features
+            </p>
+          </div>
+          <button
+            onClick={() => onAdvancedOptionsToggle?.(false)}
+            className="p-1.5 hover:bg-gray-200/50 dark:hover:bg-gray-700/50 rounded-lg transition-colors"
+            title="Close Advanced Configuration"
+          >
+            <X className="w-5 h-5 text-gray-500 dark:text-gray-400" />
+          </button>
+        </div>
+      </div>
+
+      {/* Scrollable Content */}
+      <div className="max-h-96 overflow-y-auto">
+        <div className="p-4 space-y-4">
+          
+          {/* Provider Selection */}
+          <div className="space-y-2">
+            <SectionHeader
+              title="AI Provider"
+              icon={<Server className="w-4 h-4 text-sakura-500" />}
+              isExpanded={expandedSections.provider}
+              onToggle={() => toggleSection('provider')}
+              badge={providers.find(p => p.id === aiConfig.provider)?.name || 'None'}
+            />
+            
+            {expandedSections.provider && (
+              <div className="p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg">
+                <ProviderSelector
+                  providers={providers}
+                  selectedProvider={aiConfig.provider}
+                  onProviderChange={(providerId) => {
+                    onConfigChange?.({ provider: providerId });
+                    onProviderChange?.(providerId);
+                  }}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* System Prompt */}
+          <div className="space-y-2">
+            <SectionHeader
+              title="System Prompt"
+              icon={<MessageCircle className="w-4 h-4 text-sakura-500" />}
+              isExpanded={expandedSections.systemPrompt}
+              onToggle={() => toggleSection('systemPrompt')}
+              badge={aiConfig.systemPrompt && aiConfig.systemPrompt.trim() !== '' && aiConfig.systemPrompt !== defaultSystemPrompt ? 'Custom' : 'Default'}
+            />
+            
+            {expandedSections.systemPrompt && (
+              <div className="p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400">
+                    System Prompt for {providers.find(p => p.id === aiConfig.provider)?.name || 'Current Provider'}
+                  </label>
+                  <div className="flex items-center gap-3">
+                    {/* Memory Toggle */}
+                    <label className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={aiConfig.features.enableMemory ?? true}
+                        onChange={(e) => handleFeatureChange('enableMemory', e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-gray-600 dark:text-gray-400 flex items-center gap-1">
+                        🧠
+                        Include Memory
+                      </span>
+                    </label>
+                    
+                    <button
+                      onClick={() => handleSystemPromptChange('')}
+                      className="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors"
+                    >
+                      Reset to Default
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  value={aiConfig.systemPrompt || defaultSystemPrompt}
+                  onChange={(e) => handleSystemPromptChange(e.target.value)}
+                  placeholder="Enter custom system prompt for this provider..."
+                  className="w-full min-h-[80px] max-h-[200px] p-3 text-sm bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-sakura-500 focus:border-transparent transition-colors text-gray-700 dark:text-gray-300 placeholder-gray-400 dark:placeholder-gray-500"
+                  rows={4}
+                />
+                <div className="text-xs text-gray-500 dark:text-gray-400 space-y-1">
+                  <div>This prompt will be used for all conversations with this provider. Leave empty to use the default prompt.</div>
+                  <div className="flex items-center gap-1">
+                    🧠 <strong>Include Memory:</strong> When enabled, your personal memory data will be automatically added to the system prompt to personalize responses.
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Model Selection */}
+          <div className="space-y-2">
+            <SectionHeader
+              title="Model Selection"
+              icon={<Bot className="w-4 h-4 text-sakura-500" />}
+              isExpanded={expandedSections.models}
+              onToggle={() => toggleSection('models')}
+            />
+            
+            {expandedSections.models && (
+              <div className="p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg space-y-3">
+                {/* Auto Model Selection Info */}
+                {aiConfig.features.autoModelSelection && (
+                  <div className="flex items-start gap-2 p-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+                    <Bot className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+                    <div className="text-xs text-blue-700 dark:text-blue-300">
+                      <strong>Auto Model Selection Active:</strong>
+                      <ul className="mt-1 space-y-0.5 list-disc list-inside">
+                        <li><strong>Text Model:</strong> Streaming mode & general text</li>
+                        <li><strong>Vision Model:</strong> Images in streaming mode</li>
+                        <li><strong>Code Model:</strong> Tools mode & code context</li>
+                      </ul>
+                    </div>
+                  </div>
+                )}
+                
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      Text Model
+                    </label>
+                    <ModelSelector
+                      models={models}
+                      selectedModel={aiConfig.models.text || ''}
+                      onModelChange={(modelId) => {
+                        onConfigChange?.({
+                          models: { ...aiConfig.models, text: modelId }
+                        });
+                        onModelChange?.(modelId, 'text');
+                      }}
+                      modelType="text"
+                      currentProvider={aiConfig.provider}
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      Vision Model
+                    </label>
+                    <ModelSelector
+                      models={models}
+                      selectedModel={aiConfig.models.vision || ''}
+                      onModelChange={(modelId) => {
+                        onConfigChange?.({
+                          models: { ...aiConfig.models, vision: modelId }
+                        });
+                        onModelChange?.(modelId, 'vision');
+                      }}
+                      modelType="vision"
+                      currentProvider={aiConfig.provider}
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      Code Model
+                    </label>
+                    <ModelSelector
+                      models={models}
+                      selectedModel={aiConfig.models.code || ''}
+                      onModelChange={(modelId) => {
+                        onConfigChange?.({
+                          models: { ...aiConfig.models, code: modelId }
+                        });
+                        onModelChange?.(modelId, 'code');
+                      }}
+                      modelType="code"
+                      currentProvider={aiConfig.provider}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Parameters */}
+          <div className="space-y-2">
+            <SectionHeader
+              title="Parameters"
+              icon={<Wrench className="w-4 h-4 text-sakura-500" />}
+              isExpanded={expandedSections.parameters}
+              onToggle={() => toggleSection('parameters')}
+              badge={showAdvancedParameters 
+                ? `T:${aiConfig.parameters.temperature} | P:${aiConfig.parameters.topP} | K:${aiConfig.parameters.topK} | ${formatTokens(aiConfig.parameters.maxTokens)}`
+                : `T:${aiConfig.parameters.temperature} | P:${aiConfig.parameters.topP} | ${formatTokens(aiConfig.parameters.maxTokens)}`
+              }
+            />
+            
+            {expandedSections.parameters && (
+              <div className="p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg space-y-4">
+                {/* Core Parameters */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      Temperature: {aiConfig.parameters.temperature}
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="2"
+                      step="0.1"
+                      value={aiConfig.parameters.temperature}
+                      onChange={(e) => handleParameterChange('temperature', parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Controls randomness (0=deterministic, 2=very creative)
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      Max Tokens: {formatTokens(aiConfig.parameters.maxTokens)}
+                    </label>
+                    <input
+                      type="range"
+                      min="100"
+                      max="128000"
+                      step="100"
+                      value={aiConfig.parameters.maxTokens}
+                      onChange={(e) => handleParameterChange('maxTokens', parseInt(e.target.value))}
+                      className="w-full"
+                    />
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Maximum response length
+                    </div>
+                  </div>
+                </div>
+
+                {/* Essential Sampling Parameter */}
+                <div className="grid grid-cols-1 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                      Top P: {aiConfig.parameters.topP}
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={aiConfig.parameters.topP}
+                      onChange={(e) => handleParameterChange('topP', parseFloat(e.target.value))}
+                      className="w-full"
+                    />
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Nucleus sampling (1.0=off, 0.9=recommended)
+                    </div>
+                  </div>
+                </div>
+
+                {/* Advanced Parameters Toggle */}
+                <div className="border-t border-gray-200/30 dark:border-gray-700/50 pt-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
+                      <Settings className="w-4 h-4 text-sakura-500" />
+                      Advanced Parameters
+                    </span>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={showAdvancedParameters}
+                        onChange={(e) => setShowAdvancedParameters(e.target.checked)}
+                        className="sr-only"
+                      />
+                      <div className={`w-11 h-6 rounded-full transition-colors ${
+                        showAdvancedParameters 
+                          ? 'bg-sakura-500' 
+                          : 'bg-gray-300 dark:bg-gray-600'
+                      }`}>
+                        <div className={`w-5 h-5 bg-white rounded-full shadow transform transition-transform ${
+                          showAdvancedParameters ? 'translate-x-5' : 'translate-x-0'
+                        } mt-0.5 ml-0.5`} />
+                      </div>
+                    </label>
+                  </div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Show additional sampling, penalty, and control parameters
+                  </div>
+                </div>
+
+                {/* Advanced Parameters (only shown when enabled) */}
+                {showAdvancedParameters && (
+                  <>
+                    {/* Additional Sampling Parameters */}
+                    <div className="border-t border-gray-200/30 dark:border-gray-700/50 pt-3">
+                      <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-2">
+                        <Brain className="w-4 h-4 text-sakura-500" />
+                        Additional Sampling Parameters
+                      </h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                            Top K: {aiConfig.parameters.topK}
+                          </label>
+                          <input
+                            type="range"
+                            min="1"
+                            max="100"
+                            step="1"
+                            value={aiConfig.parameters.topK}
+                            onChange={(e) => handleParameterChange('topK', parseInt(e.target.value))}
+                            className="w-full"
+                          />
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            Top-K sampling (40=default, 1=greedy)
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                            Min P: {aiConfig.parameters.minP}
+                          </label>
+                          <input
+                            type="range"
+                            min="0"
+                            max="0.5"
+                            step="0.01"
+                            value={aiConfig.parameters.minP}
+                            onChange={(e) => handleParameterChange('minP', parseFloat(e.target.value))}
+                            className="w-full"
+                          />
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            Minimum probability threshold
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                            Typical P: {aiConfig.parameters.typicalP}
+                          </label>
+                          <input
+                            type="range"
+                            min="0.1"
+                            max="1"
+                            step="0.05"
+                            value={aiConfig.parameters.typicalP}
+                            onChange={(e) => handleParameterChange('typicalP', parseFloat(e.target.value))}
+                            className="w-full"
+                          />
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            Typical sampling (1.0=off, 0.95=recommended)
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Penalty Parameters */}
+                    <div className="border-t border-gray-200/30 dark:border-gray-700/50 pt-3">
+                      <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-2">
+                        <Shield className="w-4 h-4 text-sakura-500" />
+                        Penalty Parameters
+                      </h4>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                            Frequency Penalty: {aiConfig.parameters.frequencyPenalty}
+                          </label>
+                          <input
+                            type="range"
+                            min="-2"
+                            max="2"
+                            step="0.1"
+                            value={aiConfig.parameters.frequencyPenalty}
+                            onChange={(e) => handleParameterChange('frequencyPenalty', parseFloat(e.target.value))}
+                            className="w-full"
+                          />
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            Reduces repetition based on frequency
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                            Presence Penalty: {aiConfig.parameters.presencePenalty}
+                          </label>
+                          <input
+                            type="range"
+                            min="-2"
+                            max="2"
+                            step="0.1"
+                            value={aiConfig.parameters.presencePenalty}
+                            onChange={(e) => handleParameterChange('presencePenalty', parseFloat(e.target.value))}
+                            className="w-full"
+                          />
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            Encourages new topics and ideas
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                            Repetition Penalty: {aiConfig.parameters.repetitionPenalty}
+                          </label>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="2"
+                            step="0.05"
+                            value={aiConfig.parameters.repetitionPenalty}
+                            onChange={(e) => handleParameterChange('repetitionPenalty', parseFloat(e.target.value))}
+                            className="w-full"
+                          />
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            Penalizes repeated tokens (1.0=off, 1.1=recommended)
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Control Parameters */}
+                    <div className="border-t border-gray-200/30 dark:border-gray-700/50 pt-3">
+                      <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-3 flex items-center gap-2">
+                        <StopCircle className="w-4 h-4 text-sakura-500" />
+                        Control Parameters
+                      </h4>
+                      <div className="grid grid-cols-1 gap-3">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                            Seed: {aiConfig.parameters.seed || 'Random'}
+                          </label>
+                          <div className="flex gap-2">
+                            <input
+                              type="number"
+                              min="0"
+                              max="2147483647"
+                              value={aiConfig.parameters.seed || ''}
+                              onChange={(e) => handleParameterChange('seed', e.target.value ? parseInt(e.target.value) : null)}
+                              placeholder="Random"
+                              className="flex-1 text-xs p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-sakura-500"
+                            />
+                            <button
+                              onClick={() => handleParameterChange('seed', Math.floor(Math.random() * 2147483647))}
+                              className="px-2 py-1 text-xs bg-sakura-500 text-white rounded hover:bg-sakura-600 transition-colors"
+                            >
+                              Random
+                            </button>
+                          </div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            For reproducible outputs (empty=random)
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                            Stop Sequences
+                          </label>
+                          <textarea
+                            value={aiConfig.parameters.stop.join('\n')}
+                            onChange={(e) => handleParameterChange('stop', e.target.value.split('\n').filter(s => s.trim()))}
+                            placeholder="Enter stop sequences (one per line)&#10;Example:&#10;\n&#10;###&#10;END"
+                            className="w-full text-xs p-2 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded focus:outline-none focus:ring-2 focus:ring-sakura-500 resize-none"
+                            rows={3}
+                          />
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                            Text sequences where the model will stop generating (one per line)
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* Reset Button */}
+                <div className="border-t border-gray-200/30 dark:border-gray-700/50 pt-3 flex justify-between items-center">
+                  {showAdvancedParameters && (
+                    <button
+                      onClick={() => setShowAdvancedParameters(false)}
+                      className="px-3 py-1 text-xs bg-gray-400 text-white rounded hover:bg-gray-500 transition-colors"
+                    >
+                      Hide Advanced
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      const defaultParams = {
+                        temperature: 0.7,
+                        maxTokens: 8000,
+                        topP: 1.0,
+                        topK: 40,
+                        frequencyPenalty: 0.0,
+                        presencePenalty: 0.0,
+                        repetitionPenalty: 1.0,
+                        minP: 0.0,
+                        typicalP: 1.0,
+                        seed: null,
+                        stop: []
+                      };
+                      onConfigChange?.({ parameters: defaultParams });
+                    }}
+                    className="px-3 py-1 text-xs bg-gray-500 text-white rounded hover:bg-gray-600 transition-colors ml-auto"
+                  >
+                    Reset to Defaults
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Model Configuration */}
+          <div className="space-y-2">
+            <SectionHeader
+              title="Model Configuration"
+              icon={<Cpu className="w-4 h-4 text-sakura-500" />}
+              isExpanded={expandedSections.modelConfig}
+              onToggle={() => toggleSection('modelConfig')}
+              badge={modelConfigState.currentModel ? 1 : 0}
+            />
+            
+            {expandedSections.modelConfig && (
+              <div className="p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg space-y-4">
+                {modelConfigState.isLoading ? (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="w-5 h-5 animate-spin text-sakura-500 mr-2" />
+                    <span className="text-sm text-gray-600 dark:text-gray-400">Loading model configuration...</span>
+                  </div>
+                ) : modelConfigState.availableModels.length === 0 ? (
+                  <div className="text-center py-4">
+                    <AlertCircle className="w-8 h-8 text-gray-400 mx-auto mb-2" />
+                    <p className="text-sm text-gray-600 dark:text-gray-400">No models available for configuration</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-500 mt-1">LlamaSwap service might not be running</p>
+                  </div>
+                ) : (
+                  <>
+                    {/* Current Model Display */}
+                    <div className="space-y-2">
+                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400">
+                        Selected Model - it alters the model's configuration - (Don't change it Unless you know what you are doing)
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 p-2 bg-white dark:bg-gray-700 rounded text-sm text-gray-900 dark:text-white">
+                          {modelConfigState.currentModel ? 
+                            (() => {
+                              const modelId = modelConfigState.currentModel;
+                              if (modelId.includes(':')) {
+                                const parts = modelId.split(':');
+                                if (parts.length >= 2 && parts[0].length === 36 && parts[0].includes('-')) {
+                                  return parts.slice(1).join(':');
+                                }
+                              }
+                              return modelId;
+                            })() 
+                            : 'No model selected'
+                          }
+                        </div>
+                        {modelConfigState.currentModel && !modelConfigState.isEditing && (
+                          <button
+                            onClick={() => handleModelConfigEdit(modelConfigState.currentModel!)}
+                            className="px-3 py-2 bg-sakura-500 text-white rounded hover:bg-sakura-600 transition-colors text-xs"
+                          >
+                            Configure
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Show configuration for current model */}
+                    {modelConfigState.currentModel && (
+                      <SimpleModelConfig
+                        modelName={modelConfigState.currentModel}
+                        isEditing={modelConfigState.isEditing}
+                        isLoading={modelConfigState.isLoading}
+                        onEdit={() => handleModelConfigEdit(modelConfigState.currentModel!)}
+                        onSave={handleModelConfigSave}
+                        onCancel={handleModelConfigCancel}
+                      />
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Features */}
+          <div className="space-y-2">
+            <SectionHeader
+              title="Features"
+              icon={<Zap className="w-4 h-4 text-sakura-500" />}
+              isExpanded={expandedSections.features}
+              onToggle={() => toggleSection('features')}
+              badge={Object.values(aiConfig.features).filter(Boolean).length}
+            />
+            
+            {expandedSections.features && (
+              <div className="grid grid-cols-2 gap-4 p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg">
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={aiConfig.features.enableTools}
+                    onChange={(e) => handleFeatureChange('enableTools', e.target.checked)}
+                    className="rounded"
+                  />
+                  <span className="text-gray-600 dark:text-gray-400">Enable Tools</span>
+                </label>
+
+                {/* <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={aiConfig.features.enableRAG}
+                    onChange={(e) => handleFeatureChange('enableRAG', e.target.checked)}
+                    className="rounded"
+                  />
+                  <span className="text-gray-600 dark:text-gray-400">Enable RAG</span>
+                </label> */}
+
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={aiConfig.features.enableStreaming}
+                    onChange={(e) => handleFeatureChange('enableStreaming', e.target.checked)}
+                    className="rounded"
+                  />
+                  <span className="text-gray-600 dark:text-gray-400">Enable Streaming</span>
+                </label>
+
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={aiConfig.features.autoModelSelection}
+                    onChange={(e) => handleFeatureChange('autoModelSelection', e.target.checked)}
+                    className="rounded"
+                  />
+                  <span className="text-gray-600 dark:text-gray-400">Auto Model Selection</span>
+                </label>
+
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={aiConfig.features.enableMCP || false}
+                    onChange={(e) => handleFeatureChange('enableMCP', e.target.checked)}
+                    className="rounded"
+                  />
+                  <span className="text-gray-600 dark:text-gray-400 flex items-center gap-1">
+                    <Server className="w-3 h-3" />
+                    Enable MCP
+                  </span>
+                </label>
+              </div>
+            )}
+          </div>
+
+          {/* MCP Configuration */}
+          {aiConfig.features.enableMCP && (
+            <div className="space-y-2">
+              <SectionHeader
+                title="MCP Configuration"
+                icon={<Server className="w-4 h-4 text-sakura-500" />}
+                isExpanded={expandedSections.mcp}
+                onToggle={() => toggleSection('mcp')}
+                badge={`${aiConfig.mcp?.enabledServers?.length || 0} servers`}
+              />
+              
+              {expandedSections.mcp && (
+                <div className="p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg space-y-3">
+                  {isLoadingMcpServers && (
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Loading MCP servers...
+                    </div>
+                  )}
+
+                  {/* MCP Features */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={aiConfig.mcp?.enableTools ?? true}
+                        onChange={(e) => handleMcpConfigChange('enableTools', e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-gray-600 dark:text-gray-400">MCP Tools</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={aiConfig.mcp?.enableResources ?? true}
+                        onChange={(e) => handleMcpConfigChange('enableResources', e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-gray-600 dark:text-gray-400">MCP Resources</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={aiConfig.mcp?.autoDiscoverTools ?? true}
+                        onChange={(e) => handleMcpConfigChange('autoDiscoverTools', e.target.checked)}
+                        className="rounded"
+                      />
+                      <span className="text-gray-600 dark:text-gray-400">Auto Discover</span>
+                    </label>
+
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                        Max Tool Calls: {aiConfig.mcp?.maxToolCalls ?? 5}
+                      </label>
+                      <input
+                        type="range"
+                        min="1"
+                        max="50"
+                        value={aiConfig.mcp?.maxToolCalls ?? 5}
+                        onChange={(e) => handleMcpConfigChange('maxToolCalls', parseInt(e.target.value))}
+                        className="w-full"
+                      />
+                    </div>
+                  </div>
+
+                  {/* MCP Servers */}
+                  {mcpServers.length > 0 && (
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">
+                        Available MCP Servers ({mcpServers.length})
+                      </label>
+                      <div className="space-y-2 max-h-24 overflow-y-auto">
+                        {mcpServers.map((server) => {
+                          const isEnabled = aiConfig.mcp?.enabledServers?.includes(server.name) ?? false;
+                          return (
+                            <div key={server.name} className="flex items-center justify-between p-2 bg-white dark:bg-gray-700 rounded text-xs">
+                              <div className="flex items-center gap-2">
+                                <div className={`w-2 h-2 rounded-full ${
+                                  server.isRunning ? 'bg-green-500' : 'bg-red-500'
+                                }`} />
+                                <span className="font-medium">{server.name}</span>
+                                <span className="text-gray-500">({server.status})</span>
+                              </div>
+                              <label className="flex items-center gap-1">
+                                <input
+                                  type="checkbox"
+                                  checked={isEnabled}
+                                  onChange={(e) => handleAdvancedMcpServerToggle(server.name, e.target.checked)}
+                                  disabled={!server.isRunning}
+                                  className="rounded"
+                                />
+                                <span className="text-gray-600 dark:text-gray-400">Enable</span>
+                              </label>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {mcpServers.length === 0 && !isLoadingMcpServers && (
+                    <div className="text-xs text-gray-500 dark:text-gray-400 text-center py-2">
+                      No MCP servers available. Configure servers in Settings.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Autonomous Agent Settings */}
+          <div className="space-y-2">
+            <SectionHeader
+              title="Autonomous Agent"
+              icon={<Bot className="w-4 h-4 text-sakura-500" />}
+              isExpanded={expandedSections.autonomous}
+              onToggle={() => toggleSection('autonomous')}
+              badge={aiConfig?.autonomousAgent?.enabled ? 'Enabled' : 'Disabled'}
+            />
+            
+            {expandedSections.autonomous && (
+              <div className="p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-gray-900 dark:text-white">Enable Autonomous Agent</span>
+                  <label className={`relative inline-flex items-center cursor-pointer ${
+                    aiConfig?.features?.enableStreaming ? 'opacity-50 cursor-not-allowed' : ''
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={aiConfig?.autonomousAgent?.enabled || false}
+                      disabled={aiConfig?.features?.enableStreaming}
+                      onChange={(e) => {
+                        // Don't allow changes when streaming is enabled
+                        if (aiConfig?.features?.enableStreaming) return;
+                        
+                        const currentAutonomousAgent = aiConfig?.autonomousAgent || {
+                          enabled: true,
+                          maxRetries: 3,
+                          retryDelay: 1000,
+                          enableSelfCorrection: true,
+                          enableToolGuidance: true,
+                          enableProgressTracking: true,
+                          maxToolCalls: 10,
+                          confidenceThreshold: 0.8,
+                          enableChainOfThought: false,
+                          enableErrorLearning: true
+                        };
+                        
+                        // When enabling autonomous agent, disable streaming mode
+                        // When disabling autonomous agent, keep streaming setting as is
+                        const newConfig: Partial<ClaraAIConfig> = {
+                          autonomousAgent: {
+                            ...currentAutonomousAgent,
+                            enabled: e.target.checked
+                          }
+                        };
+                        
+                        // If enabling autonomous agent, also disable streaming and enable tools
+                        if (e.target.checked) {
+                          newConfig.features = {
+                            ...aiConfig?.features,
+                            enableStreaming: false,
+                            enableTools: true,
+                            enableMCP: true
+                          };
+                        }
+                        
+                        onConfigChange?.(newConfig);
+                      }}
+                      className="sr-only"
+                    />
+                    <div className={`w-11 h-6 rounded-full transition-colors ${
+                      aiConfig?.autonomousAgent?.enabled 
+                        ? 'bg-sakura-500' 
+                        : 'bg-gray-300 dark:bg-gray-600'
+                    }`}>
+                      <div className={`w-5 h-5 bg-white rounded-full shadow transform transition-transform ${
+                        aiConfig?.autonomousAgent?.enabled ? 'translate-x-5' : 'translate-x-0'
+                      } mt-0.5 ml-0.5`} />
+                    </div>
+                  </label>
+                </div>
+
+                {/* Info note about streaming mode compatibility */}
+                {aiConfig?.features?.enableStreaming && (
+                  <div className="flex items-start gap-2 p-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+                    <AlertCircle className="w-4 h-4 text-blue-600 dark:text-blue-400 mt-0.5 flex-shrink-0" />
+                    <div className="text-xs text-blue-700 dark:text-blue-300">
+                      <strong>Note:</strong> Autonomous Agent mode is disabled when Streaming mode is active. 
+                      Switch to Tools mode to enable autonomous capabilities.
+                    </div>
+                  </div>
+                )}
+
+                {/* Structured Tool Calling Option */}
+                <div className="flex items-center justify-between">
+                  <div className="flex flex-col">
+                    <span className="text-sm font-medium text-gray-900 dark:text-white">Use Structured Tool Calling</span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                      For models without native tool support (uses JSON-based requests)
+                    </span>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={aiConfig?.features?.enableStructuredToolCalling || false}
+                      onChange={(e) => {
+                        const currentFeatures = aiConfig?.features || {
+                          enableTools: false,
+                          enableRAG: false,
+                          enableStreaming: true,
+                          enableVision: true,
+                          autoModelSelection: false,
+                          enableMCP: false,
+                          enableStructuredToolCalling: false,
+                          enableNativeJSONSchema: false,
+                        };
+                        
+                        onConfigChange?.({
+                          features: {
+                            ...currentFeatures,
+                            enableStructuredToolCalling: e.target.checked
+                          }
+                        });
+                      }}
+                      className="sr-only"
+                    />
+                    <div className={`w-11 h-6 rounded-full transition-colors ${
+                      aiConfig?.features?.enableStructuredToolCalling 
+                        ? 'bg-sakura-500' 
+                        : 'bg-gray-300 dark:bg-gray-600'
+                    }`}>
+                      <div className={`w-5 h-5 bg-white rounded-full shadow transform transition-transform ${
+                        aiConfig?.features?.enableStructuredToolCalling ? 'translate-x-5' : 'translate-x-0'
+                      } mt-0.5 ml-0.5`} />
+                    </div>
+                  </label>
+                </div>
+
+                {/* Info about structured tool calling */}
+                {aiConfig?.features?.enableStructuredToolCalling && (
+                  <div className="flex items-start gap-2 p-2 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+                    <svg className="w-4 h-4 text-green-600 dark:text-green-400 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                    </svg>
+                    <div className="text-xs text-green-700 dark:text-green-300">
+                      <strong>Structured Tool Calling Active:</strong> Compatible with models that don't support native tool calling. 
+                      Uses JSON-formatted requests for better compatibility.
+                    </div>
+                  </div>
+                )}
+
+                {aiConfig?.autonomousAgent?.enabled && (
+                  <div className="space-y-3 pl-4 border-l-2 border-sakura-200 dark:border-sakura-800">
+                    {/* Max Retries */}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Max Retries: {aiConfig?.autonomousAgent?.maxRetries || 3}
+                      </label>
+                      <input
+                        type="range"
+                        min="1"
+                        max="10"
+                        value={aiConfig?.autonomousAgent?.maxRetries || 3}
+                        onChange={(e) => {
+                          const currentAutonomousAgent = aiConfig?.autonomousAgent || {
+                            enabled: true,
+                            maxRetries: 3,
+                            retryDelay: 1000,
+                            enableSelfCorrection: true,
+                            enableToolGuidance: true,
+                            enableProgressTracking: true,
+                            maxToolCalls: 10,
+                            confidenceThreshold: 0.8,
+                            enableChainOfThought: false,
+                            enableErrorLearning: true
+                          };
+                          
+                          onConfigChange?.({
+                            autonomousAgent: {
+                              ...currentAutonomousAgent,
+                              maxRetries: parseInt(e.target.value)
+                            }
+                          });
+                        }}
+                        className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer slider"
+                      />
+                    </div>
+
+                    {/* Max Tool Calls */}
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                        Max Tool Calls: {aiConfig?.autonomousAgent?.maxToolCalls || 10}
+                      </label>
+                      <input
+                        type="range"
+                        min="1"
+                        max="50"
+                        value={aiConfig?.autonomousAgent?.maxToolCalls || 10}
+                        onChange={(e) => {
+                          const currentAutonomousAgent = aiConfig?.autonomousAgent || {
+                            enabled: true,
+                            maxRetries: 3,
+                            retryDelay: 1000,
+                            enableSelfCorrection: true,
+                            enableToolGuidance: true,
+                            enableProgressTracking: true,
+                            maxToolCalls: 10,
+                            confidenceThreshold: 0.8,
+                            enableChainOfThought: false,
+                            enableErrorLearning: true
+                          };
+                          
+                          onConfigChange?.({
+                            autonomousAgent: {
+                              ...currentAutonomousAgent,
+                              maxToolCalls: parseInt(e.target.value)
+                            }
+                          });
+                        }}
+                        className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer slider"
+                      />
+                    </div>
+
+                    {/* Agent Features */}
+                    <div className="grid grid-cols-1 gap-2">
+                      <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={aiConfig?.autonomousAgent?.enableSelfCorrection || false}
+                          onChange={(e) => {
+                            const currentAutonomousAgent = aiConfig?.autonomousAgent || {
+                              enabled: true,
+                              maxRetries: 3,
+                              retryDelay: 1000,
+                              enableSelfCorrection: true,
+                              enableToolGuidance: true,
+                              enableProgressTracking: true,
+                              maxToolCalls: 10,
+                              confidenceThreshold: 0.8,
+                              enableChainOfThought: false,
+                              enableErrorLearning: true
+                            };
+                            
+                            onConfigChange?.({
+                              autonomousAgent: {
+                                ...currentAutonomousAgent,
+                                enableSelfCorrection: e.target.checked
+                              }
+                            });
+                          }}
+                          className="w-3 h-3 text-sakura-500 rounded border-gray-300 focus:ring-sakura-500"
+                        />
+                        Self-Correction
+                      </label>
+
+                      <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={aiConfig?.autonomousAgent?.enableProgressTracking || false}
+                          onChange={(e) => {
+                            const currentAutonomousAgent = aiConfig?.autonomousAgent || {
+                              enabled: true,
+                              maxRetries: 3,
+                              retryDelay: 1000,
+                              enableSelfCorrection: true,
+                              enableToolGuidance: true,
+                              enableProgressTracking: true,
+                              maxToolCalls: 10,
+                              confidenceThreshold: 0.8,
+                              enableChainOfThought: false,
+                              enableErrorLearning: true
+                            };
+                            
+                            onConfigChange?.({
+                              autonomousAgent: {
+                                ...currentAutonomousAgent,
+                                enableProgressTracking: e.target.checked
+                              }
+                            });
+                          }}
+                          className="w-3 h-3 text-sakura-500 rounded border-gray-300 focus:ring-sakura-500"
+                        />
+                        Progress Tracking
+                      </label>
+
+                      <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300">
+                        <input
+                          type="checkbox"
+                          checked={aiConfig?.autonomousAgent?.enableChainOfThought || false}
+                          onChange={(e) => {
+                            const currentAutonomousAgent = aiConfig?.autonomousAgent || {
+                              enabled: true,
+                              maxRetries: 3,
+                              retryDelay: 1000,
+                              enableSelfCorrection: true,
+                              enableToolGuidance: true,
+                              enableProgressTracking: true,
+                              maxToolCalls: 10,
+                              confidenceThreshold: 0.8,
+                              enableChainOfThought: false,
+                              enableErrorLearning: true
+                            };
+                            
+                            onConfigChange?.({
+                              autonomousAgent: {
+                                ...currentAutonomousAgent,
+                                enableChainOfThought: e.target.checked
+                              }
+                            });
+                          }}
+                          className="w-3 h-3 text-sakura-500 rounded border-gray-300 focus:ring-sakura-500"
+                        />
+                        Chain of Thought
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Artifact Configuration */}
+          <div className="space-y-2">
+            <SectionHeader
+              title="Artifact Generation"
+              icon={<Palette className="w-4 h-4 text-sakura-500" />}
+              isExpanded={expandedSections.artifacts}
+              onToggle={() => toggleSection('artifacts')}
+              badge={aiConfig?.artifacts?.autoDetectArtifacts ? 'Auto' : 'Manual'}
+            />
+            
+            {expandedSections.artifacts && (
+              <div className="p-3 bg-gray-50/50 dark:bg-gray-800/30 rounded-lg space-y-4">
+                <div className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+                  Configure which types of content should be automatically detected and rendered as interactive artifacts.
+                  {/* Debug indicator */}
+                  <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded text-xs">
+                    <strong>Current Status:</strong> Auto-detection is{' '}
+                    <span className={`font-semibold ${aiConfig?.artifacts?.autoDetectArtifacts ?? true ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                      {aiConfig?.artifacts?.autoDetectArtifacts ?? true ? 'ENABLED' : 'DISABLED'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Auto Detection Toggle */}
+                <div className="flex items-center justify-between p-2 bg-white/50 dark:bg-gray-700/30 rounded-lg">
+                  <div>
+                    <div className="text-sm font-medium text-gray-700 dark:text-gray-300">Auto-Detect Artifacts</div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">Automatically create artifacts from AI responses</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      const currentArtifacts = aiConfig?.artifacts || {
+                        enableCodeArtifacts: true,
+                        enableChartArtifacts: true,
+                        enableTableArtifacts: true,
+                        enableMermaidArtifacts: true,
+                        enableHtmlArtifacts: true,
+                        enableMarkdownArtifacts: true,
+                        enableJsonArtifacts: true,
+                        enableDiagramArtifacts: true,
+                        autoDetectArtifacts: true,
+                        maxArtifactsPerMessage: 10
+                      };
+                      
+                      const newValue = !(aiConfig?.artifacts?.autoDetectArtifacts ?? true);
+                      
+                      onConfigChange?.({
+                        artifacts: {
+                          ...currentArtifacts,
+                          autoDetectArtifacts: newValue
+                        }
+                      });
+                      
+                      console.log('🎨 Auto-detect artifacts toggled:', newValue);
+                    }}
+                    className={`relative inline-flex h-6 w-11 items-center rounded-full transition-all duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-sakura-500 focus:ring-offset-2 hover:shadow-md ${
+                      aiConfig?.artifacts?.autoDetectArtifacts ?? true
+                        ? 'bg-sakura-500 hover:bg-sakura-600'
+                        : 'bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500'
+                    }`}
+                    title={`Click to ${aiConfig?.artifacts?.autoDetectArtifacts ?? true ? 'disable' : 'enable'} auto-detection`}
+                  >
+                    <span
+                      className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-all duration-200 ease-in-out ${
+                        aiConfig?.artifacts?.autoDetectArtifacts ?? true
+                          ? 'translate-x-6'
+                          : 'translate-x-1'
+                      }`}
+                    />
+                    {/* Status indicator */}
+                    <span className="sr-only">
+                      {aiConfig?.artifacts?.autoDetectArtifacts ?? true ? 'Auto-detection enabled' : 'Auto-detection disabled'}
+                    </span>
+                  </button>
+                </div>
+
+                {/* Artifact Type Toggles */}
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 p-2 bg-white/30 dark:bg-gray-700/20 rounded">
+                    <input
+                      type="checkbox"
+                      checked={aiConfig?.artifacts?.enableCodeArtifacts ?? true}
+                      onChange={(e) => {
+                        const currentArtifacts = aiConfig?.artifacts || {
+                          enableCodeArtifacts: true,
+                          enableChartArtifacts: true,
+                          enableTableArtifacts: true,
+                          enableMermaidArtifacts: true,
+                          enableHtmlArtifacts: true,
+                          enableMarkdownArtifacts: true,
+                          enableJsonArtifacts: true,
+                          enableDiagramArtifacts: true,
+                          autoDetectArtifacts: true,
+                          maxArtifactsPerMessage: 10
+                        };
+                        
+                        onConfigChange?.({
+                          artifacts: {
+                            ...currentArtifacts,
+                            enableCodeArtifacts: e.target.checked
+                          }
+                        });
+                      }}
+                      className="w-3 h-3 text-sakura-500 rounded border-gray-300 focus:ring-sakura-500"
+                    />
+                    <Code className="w-3 h-3" />
+                    Code Blocks
+                  </label>
+
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 p-2 bg-white/30 dark:bg-gray-700/20 rounded">
+                    <input
+                      type="checkbox"
+                      checked={aiConfig?.artifacts?.enableChartArtifacts ?? true}
+                      onChange={(e) => {
+                        const currentArtifacts = aiConfig?.artifacts || {
+                          enableCodeArtifacts: true,
+                          enableChartArtifacts: true,
+                          enableTableArtifacts: true,
+                          enableMermaidArtifacts: true,
+                          enableHtmlArtifacts: true,
+                          enableMarkdownArtifacts: true,
+                          enableJsonArtifacts: true,
+                          enableDiagramArtifacts: true,
+                          autoDetectArtifacts: true,
+                          maxArtifactsPerMessage: 10
+                        };
+                        
+                        onConfigChange?.({
+                          artifacts: {
+                            ...currentArtifacts,
+                            enableChartArtifacts: e.target.checked
+                          }
+                        });
+                      }}
+                      className="w-3 h-3 text-sakura-500 rounded border-gray-300 focus:ring-sakura-500"
+                    />
+                    <BarChart3 className="w-3 h-3" />
+                    Charts & Graphs
+                  </label>
+
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 p-2 bg-white/30 dark:bg-gray-700/20 rounded">
+                    <input
+                      type="checkbox"
+                      checked={aiConfig?.artifacts?.enableTableArtifacts ?? true}
+                      onChange={(e) => {
+                        const currentArtifacts = aiConfig?.artifacts || {
+                          enableCodeArtifacts: true,
+                          enableChartArtifacts: true,
+                          enableTableArtifacts: true,
+                          enableMermaidArtifacts: true,
+                          enableHtmlArtifacts: true,
+                          enableMarkdownArtifacts: true,
+                          enableJsonArtifacts: true,
+                          enableDiagramArtifacts: true,
+                          autoDetectArtifacts: true,
+                          maxArtifactsPerMessage: 10
+                        };
+                        
+                        onConfigChange?.({
+                          artifacts: {
+                            ...currentArtifacts,
+                            enableTableArtifacts: e.target.checked
+                          }
+                        });
+                      }}
+                      className="w-3 h-3 text-sakura-500 rounded border-gray-300 focus:ring-sakura-500"
+                    />
+                    <Table className="w-3 h-3" />
+                    Data Tables
+                  </label>
+
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 p-2 bg-white/30 dark:bg-gray-700/20 rounded">
+                    <input
+                      type="checkbox"
+                      checked={aiConfig?.artifacts?.enableMermaidArtifacts ?? true}
+                      onChange={(e) => {
+                        const currentArtifacts = aiConfig?.artifacts || {
+                          enableCodeArtifacts: true,
+                          enableChartArtifacts: true,
+                          enableTableArtifacts: true,
+                          enableMermaidArtifacts: true,
+                          enableHtmlArtifacts: true,
+                          enableMarkdownArtifacts: true,
+                          enableJsonArtifacts: true,
+                          enableDiagramArtifacts: true,
+                          autoDetectArtifacts: true,
+                          maxArtifactsPerMessage: 10
+                        };
+                        
+                        onConfigChange?.({
+                          artifacts: {
+                            ...currentArtifacts,
+                            enableMermaidArtifacts: e.target.checked
+                          }
+                        });
+                      }}
+                      className="w-3 h-3 text-sakura-500 rounded border-gray-300 focus:ring-sakura-500"
+                    />
+                    <Workflow className="w-3 h-3" />
+                    Diagrams
+                  </label>
+
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 p-2 bg-white/30 dark:bg-gray-700/20 rounded">
+                    <input
+                      type="checkbox"
+                      checked={aiConfig?.artifacts?.enableHtmlArtifacts ?? true}
+                      onChange={(e) => {
+                        const currentArtifacts = aiConfig?.artifacts || {
+                          enableCodeArtifacts: true,
+                          enableChartArtifacts: true,
+                          enableTableArtifacts: true,
+                          enableMermaidArtifacts: true,
+                          enableHtmlArtifacts: true,
+                          enableMarkdownArtifacts: true,
+                          enableJsonArtifacts: true,
+                          enableDiagramArtifacts: true,
+                          autoDetectArtifacts: true,
+                          maxArtifactsPerMessage: 10
+                        };
+                        
+                        onConfigChange?.({
+                          artifacts: {
+                            ...currentArtifacts,
+                            enableHtmlArtifacts: e.target.checked
+                          }
+                        });
+                      }}
+                      className="w-3 h-3 text-sakura-500 rounded border-gray-300 focus:ring-sakura-500"
+                    />
+                    <Globe className="w-3 h-3" />
+                    HTML Content
+                  </label>
+
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 p-2 bg-white/30 dark:bg-gray-700/20 rounded">
+                    <input
+                      type="checkbox"
+                      checked={aiConfig?.artifacts?.enableMarkdownArtifacts ?? true}
+                      onChange={(e) => {
+                        const currentArtifacts = aiConfig?.artifacts || {
+                          enableCodeArtifacts: true,
+                          enableChartArtifacts: true,
+                          enableTableArtifacts: true,
+                          enableMermaidArtifacts: true,
+                          enableHtmlArtifacts: true,
+                          enableMarkdownArtifacts: true,
+                          enableJsonArtifacts: true,
+                          enableDiagramArtifacts: true,
+                          autoDetectArtifacts: true,
+                          maxArtifactsPerMessage: 10
+                        };
+                        
+                        onConfigChange?.({
+                          artifacts: {
+                            ...currentArtifacts,
+                            enableMarkdownArtifacts: e.target.checked
+                          }
+                        });
+                      }}
+                      className="w-3 h-3 text-sakura-500 rounded border-gray-300 focus:ring-sakura-500"
+                    />
+                    <FileText className="w-3 h-3" />
+                    Markdown
+                  </label>
+
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 p-2 bg-white/30 dark:bg-gray-700/20 rounded">
+                    <input
+                      type="checkbox"
+                      checked={aiConfig?.artifacts?.enableJsonArtifacts ?? true}
+                      onChange={(e) => {
+                        const currentArtifacts = aiConfig?.artifacts || {
+                          enableCodeArtifacts: true,
+                          enableChartArtifacts: true,
+                          enableTableArtifacts: true,
+                          enableMermaidArtifacts: true,
+                          enableHtmlArtifacts: true,
+                          enableMarkdownArtifacts: true,
+                          enableJsonArtifacts: true,
+                          enableDiagramArtifacts: true,
+                          autoDetectArtifacts: true,
+                          maxArtifactsPerMessage: 10
+                        };
+                        
+                        onConfigChange?.({
+                          artifacts: {
+                            ...currentArtifacts,
+                            enableJsonArtifacts: e.target.checked
+                          }
+                        });
+                      }}
+                      className="w-3 h-3 text-sakura-500 rounded border-gray-300 focus:ring-sakura-500"
+                    />
+                    <Database className="w-3 h-3" />
+                    JSON Data
+                  </label>
+
+                  <label className="flex items-center gap-2 text-xs text-gray-700 dark:text-gray-300 p-2 bg-white/30 dark:bg-gray-700/20 rounded">
+                    <input
+                      type="checkbox"
+                      checked={aiConfig?.artifacts?.enableDiagramArtifacts ?? true}
+                      onChange={(e) => {
+                        const currentArtifacts = aiConfig?.artifacts || {
+                          enableCodeArtifacts: true,
+                          enableChartArtifacts: true,
+                          enableTableArtifacts: true,
+                          enableMermaidArtifacts: true,
+                          enableHtmlArtifacts: true,
+                          enableMarkdownArtifacts: true,
+                          enableJsonArtifacts: true,
+                          enableDiagramArtifacts: true,
+                          autoDetectArtifacts: true,
+                          maxArtifactsPerMessage: 10
+                        };
+                        
+                        onConfigChange?.({
+                          artifacts: {
+                            ...currentArtifacts,
+                            enableDiagramArtifacts: e.target.checked
+                          }
+                        });
+                      }}
+                      className="w-3 h-3 text-sakura-500 rounded border-gray-300 focus:ring-sakura-500"
+                    />
+                    <GitBranch className="w-3 h-3" />
+                    Flowcharts
+                  </label>
+                </div>
+
+                {/* Max Artifacts Slider */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Max Artifacts per Message: {aiConfig?.artifacts?.maxArtifactsPerMessage || 10}
+                  </label>
+                  <input
+                    type="range"
+                    min="1"
+                    max="20"
+                    value={aiConfig?.artifacts?.maxArtifactsPerMessage || 10}
+                    onChange={(e) => {
+                      const currentArtifacts = aiConfig?.artifacts || {
+                        enableCodeArtifacts: true,
+                        enableChartArtifacts: true,
+                        enableTableArtifacts: true,
+                        enableMermaidArtifacts: true,
+                        enableHtmlArtifacts: true,
+                        enableMarkdownArtifacts: true,
+                        enableJsonArtifacts: true,
+                        enableDiagramArtifacts: true,
+                        autoDetectArtifacts: true,
+                        maxArtifactsPerMessage: 10
+                      };
+                      
+                      onConfigChange?.({
+                        artifacts: {
+                          ...currentArtifacts,
+                          maxArtifactsPerMessage: parseInt(e.target.value)
+                        }
+                      });
+                    }}
+                    className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer slider"
+                  />
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Limit the number of artifacts created per AI response
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ClaraCore Optimizer Configuration */}
+          
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/**
+ * Main Clara Input Component
+ */
+const ClaraAssistantInput: React.FC<ClaraInputProps> = ({
+  onSendMessage,
+  isLoading = false,
+  onStop,
+  onNewChat,
+  showAdvancedOptions = false,
+  sessionConfig,
+  onConfigChange,
+  providers = [],
+  models = [],
+  onProviderChange,
+  onModelChange,
+  messages = [],
+  setMessages,
+  currentSession,
+  setSessions,
+  autoTTSText = '',
+  autoTTSTrigger = null,
+  onPreloadModel,
+  showAdvancedOptionsPanel = false,
+  onAdvancedOptionsToggle,
+  autonomousAgentStatus
+}) => {
+  const [input, setInput] = useState('');
+  const [files, setFiles] = useState<File[]>([]);
+  const [showAdvanced, setShowAdvanced] = useState(showAdvancedOptions);
+  const [dragCounter, setDragCounter] = useState(0);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const inputContainerRef = useRef<HTMLDivElement>(null); // For click-outside detection
+  const overflowMenuTriggerRef = useRef<HTMLButtonElement>(null); // For overflow menu trigger
+  const notebookDropdownRef = useRef<HTMLDivElement>(null); // For notebook dropdown click-outside detection
+  const screenDropdownRef = useRef<HTMLDivElement>(null); // For screen dropdown click-outside detection
+
+  // Model preloading state
+  const [hasPreloaded, setHasPreloaded] = useState(false);
+  const preloadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Streaming vs Tools mode state
+  const [isStreamingMode, setIsStreamingMode] = useState(
+    sessionConfig?.aiConfig?.features.enableStreaming ?? false
+  );
+
+  // Voice chat state - simplified for transcription only
+  const [showVoiceChat, setShowVoiceChat] = useState(false);
+  const [isVoiceChatEnabled, setIsVoiceChatEnabled] = useState(false);
+  const [isVoiceProcessing, setIsVoiceProcessing] = useState(false);
+
+  // Overflow menu state
+  const [showOverflowMenu, setShowOverflowMenu] = useState(false);
+
+  // MCP selector state
+  const [showMcpSelector, setShowMcpSelector] = useState(false);
+  const [mcpSearchTerm, setMcpSearchTerm] = useState('');
+  const [mcpServers, setMcpServers] = useState<ClaraMCPServer[]>([]);
+  const [togglingServers, setTogglingServers] = useState<Set<string>>(new Set());
+
+  // Auto-start python-mcp state
+  const [shouldAutoStartPythonMcp, setShouldAutoStartPythonMcp] = useState(false);
+
+  // Quick recording state for mic button
+  const [isQuickRecording, setIsQuickRecording] = useState(false);
+  const [quickRecordingProgress, setQuickRecordingProgress] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Python backend status for voice functionality
+  const [pythonBackendStatus, setPythonBackendStatus] = useState<{
+    isHealthy: boolean;
+    serviceUrl: string | null;
+    error?: string;
+  }>({ isHealthy: false, serviceUrl: null });
+  const [isPythonStarting, setIsPythonStarting] = useState(false);
+
+  // Image generation state
+  const [showImageGenWidget, setShowImageGenWidget] = useState(false);
+  const [availableImageModels, setAvailableImageModels] = useState<string[]>([]);
+  const [imageGenEnabled, setImageGenEnabled] = useState(false);
+
+  // Provider health check state
+  const [providerHealthStatus, setProviderHealthStatus] = useState<'unknown' | 'checking' | 'healthy' | 'unhealthy'>('unknown');
+  const [showProviderOfflineModal, setShowProviderOfflineModal] = useState(false);
+  const [providerOfflineMessage, setProviderOfflineMessage] = useState('');
+  const [offlineProvider, setOfflineProvider] = useState<ClaraProvider | null>(null);
+  const [showClaraCoreOffer, setShowClaraCoreOffer] = useState(false);
+
+  // Screen sharing state
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Screen source picker state
+  const [showScreenPicker, setShowScreenPicker] = useState(false);
+  const [availableSources, setAvailableSources] = useState<Array<{ id: string; name: string; thumbnail: string }>>([]);
+  const [showScreenDropdown, setShowScreenDropdown] = useState(false);
+  const [currentScreenSource, setCurrentScreenSource] = useState<{ id: string; name: string; thumbnail: string } | null>(null);
+
+  // Notebook selection state
+  const [isNotebookMode, setIsNotebookMode] = useState(false);
+  const [selectedNotebook, setSelectedNotebook] = useState<any | null>(null);
+  const [availableNotebooks, setAvailableNotebooks] = useState<any[]>([]);
+  const [showNotebookPicker, setShowNotebookPicker] = useState(false);
+  const [showNotebookDropdown, setShowNotebookDropdown] = useState(false);
+  const [isLoadingNotebooks, setIsLoadingNotebooks] = useState(false);
+  const [isQueryingNotebook, setIsQueryingNotebook] = useState(false);
+
+  // Progress tracking state for context loading feedback
+  const [progressState, setProgressState] = useState<{
+    isActive: boolean;
+    type: string;
+    progress: number;
+    message: string;
+    details?: string;
+  }>({
+    isActive: false,
+    type: '',
+    progress: 0,
+    message: '',
+    details: ''
+  });
+
+  // Progress listener setup
+  useEffect(() => {
+    const electron = window.electron as any;
+    if (!electron?.receive) {
+      console.error('❌ Electron receive API not available for progress events');
+      return;
+    }
+
+    // console.log('🔧 Setting up progress event listeners...');
+    // console.log('📡 Electron API available:', !!electron);
+    // console.log('📡 Electron receive function:', !!electron?.receive);
+
+    const handleProgressUpdate = (progressData: any) => {
+      // console.log('📊 Progress Update Received:', progressData);
+      // console.log('  Type:', progressData.type);
+      // console.log('  Progress:', progressData.progress);
+      // console.log('  Message:', progressData.message);
+      // console.log('  Details:', progressData.details);
+      // console.log('  Current isLoading:', isLoading);
+      
+      // Show progress for message sending, model loading, and other important operations
+      // Allow progress for model loading/preloading even when not actively sending messages
+      const allowedProgressTypes = ['model', 'context', 'loading', 'preload', 'download'];
+      const isAllowedOperation = allowedProgressTypes.some(type => 
+        progressData.type?.toLowerCase().includes(type) || 
+        progressData.message?.toLowerCase().includes(type)
+      );
+      
+      if (!isLoading && !isAllowedOperation) {
+        // console.log('📊 Ignoring progress update - not actively sending message and not an allowed operation');
+        return;
+      }
+      
+      setProgressState(prev => {
+        const newState = {
+          isActive: true,
+          type: progressData.type,
+          progress: progressData.progress,
+          message: progressData.message,
+          details: progressData.details
+        };
+        // console.log('  Setting new progressState (message send active):', newState);
+        return newState;
+      });
+
+      // Auto-hide progress for different scenarios
+      if (progressData.progress === -1) {
+        // Indeterminate progress - hide after 3 seconds
+        setTimeout(() => {
+          // console.log('📊 Auto-hiding indeterminate progress after 3s');
+          setProgressState(prev => ({ ...prev, isActive: false }));
+        }, 3000);
+      } else if (progressData.progress >= 100) {
+        // Progress complete - hide after 1.5 seconds to show completion
+        setTimeout(() => {
+          // console.log('📊 Auto-hiding completed progress (100%) after 1.5s');
+          setProgressState(prev => ({ ...prev, isActive: false }));
+        }, 1500);
+      } else if (progressData.progress > 0) {
+        // For determinate progress, set a fallback auto-hide after 10 seconds
+        // This gets reset with each new progress update
+        clearTimeout((window as any).progressAutoHideTimeout);
+        (window as any).progressAutoHideTimeout = setTimeout(() => {
+          // console.log('📊 Auto-hiding stale progress after 10s timeout');
+          setProgressState(prev => ({ ...prev, isActive: false }));
+        }, 10000);
+      }
+    };
+
+    const handleProgressComplete = () => {
+      // console.log('📊 Progress Complete - hiding progress indicator');
+      setProgressState(prev => ({ ...prev, isActive: false }));
+    };
+
+    // Enhanced logging wrapper
+    const debugHandleProgressUpdate = (progressData: any) => {
+      // console.log('🔥 RAW IPC Event Received:', {
+      //   progressData,
+      //   timestamp: new Date().toISOString(),
+      //   isLoading: isLoading // Include loading state in logs
+      // });
+      handleProgressUpdate(progressData);
+    };
+
+    // Use the correct electron API for registering listeners
+    const removeProgressListener = electron.receive('llama-progress-update', debugHandleProgressUpdate);
+    const removeCompleteListener = electron.receive('llama-progress-complete', handleProgressComplete);
+
+    console.log('✅ Progress event listeners registered');
+
+    return () => {
+      console.log('🧹 Cleaning up progress event listeners');
+      if (removeProgressListener) removeProgressListener();
+      if (removeCompleteListener) removeCompleteListener();
+      
+      // Clean up any pending progress timeouts
+      if ((window as any).progressAutoHideTimeout) {
+        clearTimeout((window as any).progressAutoHideTimeout);
+        delete (window as any).progressAutoHideTimeout;
+      }
+    };
+  }, [isLoading]); // Add isLoading as dependency
+
+  // Test function for debugging progress UI
+  useEffect(() => {
+    const testProgressUI = () => {
+      console.log('🧪 Testing Progress UI with auto-hide...');
+      
+      // Test model loading progress
+      setProgressState({
+        isActive: true,
+        type: 'model',
+        progress: 25,
+        message: 'Loading model',
+        details: 'Initializing layers'
+      });
+      
+      setTimeout(() => {
+        setProgressState({
+          isActive: true,
+          type: 'model', 
+          progress: 75,
+          message: 'Loading model',
+          details: 'Processing weights'
+        });
+      }, 2000);
+      
+      setTimeout(() => {
+        setProgressState({
+          isActive: true,
+          type: 'model',
+          progress: 100,
+          message: 'Model loaded',
+          details: 'Ready for inference'
+        });
+      }, 4000);
+      
+      setTimeout(() => {
+        setProgressState(prev => ({ ...prev, isActive: false }));
+      }, 6000);
+    };
+
+    const testContextProgress = () => {
+      console.log('🧪 Testing Context Loading Progress...');
+      
+      setProgressState({
+        isActive: true,
+        type: 'context',
+        progress: 0,
+        message: 'Processing context',
+        details: 'Analyzing input...'
+      });
+      
+      let progress = 0;
+      const interval = setInterval(() => {
+        progress += 20;
+        setProgressState({
+          isActive: true,
+          type: 'context',
+          progress: progress,
+          message: 'Processing context',
+          details: `Processing ${progress * 10} tokens...`
+        });
+        
+        if (progress >= 100) {
+          clearInterval(interval);
+          setTimeout(() => {
+            setProgressState(prev => ({ ...prev, isActive: false }));
+          }, 1500);
+        }
+      }, 500);
+    };
+
+    // Expose test functions to window for debugging
+    (window as any).testProgressUI = testProgressUI;
+    (window as any).testContextProgress = testContextProgress;
+    
+    
+    return () => {
+      delete (window as any).testProgressUI;
+      delete (window as any).testContextProgress;
+    };
+  }, []);
+
+  // Auto-hide progress when loading completes
+  useEffect(() => {
+    if (!isLoading && progressState.isActive) {
+      const timeout = setTimeout(() => {
+        setProgressState(prev => ({ ...prev, isActive: false }));
+      }, 1000);
+      
+      return () => clearTimeout(timeout);
+    }
+  }, [isLoading, progressState.isActive]);
+
+  // Also check health when provider changes
+  useEffect(() => {
+    if (sessionConfig?.aiConfig?.provider) {
+      setProviderHealthStatus('unknown');
+    }
+  }, [sessionConfig?.aiConfig?.provider]);
+
+  // Sync streaming mode state with session config changes
+  useEffect(() => {
+    if (sessionConfig?.aiConfig?.features) {
+      setIsStreamingMode(sessionConfig.aiConfig.features.enableStreaming ?? false);
+    }
+  }, [sessionConfig?.aiConfig?.features.enableStreaming]);
+
+  // Auto-enable python-mcp when in agent mode with no other MCP servers
+  useEffect(() => {
+    // Only run when we have a valid session config and tools are enabled (agent mode)
+    if (!sessionConfig?.aiConfig?.features || !onConfigChange) return;
+    
+    const isAgentMode = sessionConfig.aiConfig.features.enableTools && 
+                       sessionConfig.aiConfig.features.enableMCP && 
+                       !sessionConfig.aiConfig.features.enableStreaming;
+    
+    if (isAgentMode) {
+      const currentServers = sessionConfig.aiConfig.mcp?.enabledServers || [];
+      const hasPythonMCP = currentServers.includes('python-mcp');
+      
+      // If we're in agent mode and python-mcp is not selected, automatically enable it
+      // This ensures python-mcp is always available when switching to agent mode OR on initial load
+      if (!hasPythonMCP) {
+        console.log('🐍 Auto-enabling python-mcp for agent mode (no python-mcp currently selected)');
+        
+        const updatedConfig = {
+          ...sessionConfig.aiConfig,
+          mcp: {
+            enableTools: sessionConfig.aiConfig.mcp?.enableTools ?? true,
+            enableResources: sessionConfig.aiConfig.mcp?.enableResources ?? true,
+            autoDiscoverTools: sessionConfig.aiConfig.mcp?.autoDiscoverTools ?? true,
+            maxToolCalls: sessionConfig.aiConfig.mcp?.maxToolCalls ?? 5,
+            ...sessionConfig.aiConfig.mcp,
+            enabledServers: currentServers.length === 0 ? ['python-mcp'] : ['python-mcp', ...currentServers]
+          }
+        };
+        
+        onConfigChange({ aiConfig: updatedConfig });
+        
+        // Also trigger auto-start for initial loads (minimal addition)
+        setShouldAutoStartPythonMcp(true);
+      }
+    }
+  }, [
+    sessionConfig?.aiConfig?.features.enableTools,
+    sessionConfig?.aiConfig?.features.enableMCP, 
+    sessionConfig?.aiConfig?.features.enableStreaming,
+    sessionConfig?.aiConfig?.mcp?.enabledServers,
+    onConfigChange
+  ]);
+
+  // Default AI config if not provided
+  const defaultAIConfig: ClaraAIConfig = {
+    models: {
+      text: sessionConfig?.aiConfig?.models.text || '',
+      vision: sessionConfig?.aiConfig?.models.vision || '',
+      code: sessionConfig?.aiConfig?.models.code || ''
+    },
+    provider: sessionConfig?.aiConfig?.provider || (providers.find(p => p.isPrimary)?.id || ''),
+    parameters: {
+      temperature: sessionConfig?.aiConfig?.parameters.temperature || sessionConfig?.temperature || 0.7,
+      maxTokens: sessionConfig?.aiConfig?.parameters.maxTokens || sessionConfig?.maxTokens || 8000,
+      topP: sessionConfig?.aiConfig?.parameters.topP || 1.0,
+      topK: sessionConfig?.aiConfig?.parameters.topK || 40,
+      frequencyPenalty: sessionConfig?.aiConfig?.parameters.frequencyPenalty || 0.0,
+      presencePenalty: sessionConfig?.aiConfig?.parameters.presencePenalty || 0.0,
+      repetitionPenalty: sessionConfig?.aiConfig?.parameters.repetitionPenalty || 1.0,
+      minP: sessionConfig?.aiConfig?.parameters.minP || 0.0,
+      typicalP: sessionConfig?.aiConfig?.parameters.typicalP || 1.0,
+      seed: sessionConfig?.aiConfig?.parameters.seed || null,
+      stop: sessionConfig?.aiConfig?.parameters.stop || []
+    },
+    features: {
+      enableTools: sessionConfig?.aiConfig?.features.enableTools ?? sessionConfig?.enableTools ?? true,
+      enableRAG: sessionConfig?.aiConfig?.features.enableRAG ?? sessionConfig?.enableRAG ?? false,
+      enableStreaming: sessionConfig?.aiConfig?.features.enableStreaming ?? false,
+      enableVision: sessionConfig?.aiConfig?.features.enableVision ?? true,
+      autoModelSelection: sessionConfig?.aiConfig?.features.autoModelSelection ?? true,
+      enableMCP: sessionConfig?.aiConfig?.features.enableMCP ?? true,
+      enableStructuredToolCalling: sessionConfig?.aiConfig?.features.enableStructuredToolCalling ?? false,
+      enableNativeJSONSchema: sessionConfig?.aiConfig?.features.enableNativeJSONSchema ?? false,
+      enableMemory: sessionConfig?.aiConfig?.features.enableMemory ?? true,
+    }
+  };
+
+  const currentAIConfig = sessionConfig?.aiConfig || defaultAIConfig;
+
+  // Auto-resize textarea
+  const adjustTextareaHeight = useCallback(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+    }
+  }, []);
+
+  // Focus management - focus textarea after operations
+  const focusTextarea = useCallback(() => {
+    // Use setTimeout to ensure DOM updates are complete
+    setTimeout(() => {
+      if (textareaRef.current && !textareaRef.current.disabled) {
+        textareaRef.current.focus();
+      }
+    }, 100);
+  }, []);
+
+
+
+  // Auto-focus when loading state changes (response completes)
+  useEffect(() => {
+    // When loading changes from true to false (response completed), focus the textarea
+    if (!isLoading) {
+      focusTextarea();
+    }
+  }, [isLoading, focusTextarea]);
+
+  // Auto-focus on component mount (initial load)
+  useEffect(() => {
+    focusTextarea();
+  }, [focusTextarea]);
+
+  // Click outside to close advanced options panel
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      
+      // Handle notebook dropdown
+      if (showNotebookDropdown) {
+        // Don't close if clicking inside the notebook dropdown or its button
+        const clickedElement = target as Element;
+        if (clickedElement.closest && clickedElement.closest('[data-notebook-dropdown]')) {
+          return;
+        }
+        setShowNotebookDropdown(false);
+        return;
+      }
+      
+      // Handle screen dropdown
+      if (showScreenDropdown) {
+        // Don't close if clicking inside the screen dropdown or its button
+        const clickedElement = target as Element;
+        if (clickedElement.closest && clickedElement.closest('[data-screen-dropdown]')) {
+          return;
+        }
+        setShowScreenDropdown(false);
+        return;
+      }
+      
+      // Only close if advanced options panel is open
+      if (showAdvancedOptionsPanel && onAdvancedOptionsToggle) {
+        // Don't close if clicking inside the input container
+        if (inputContainerRef.current && inputContainerRef.current.contains(target)) {
+          return;
+        }
+        
+        // Don't close if clicking inside the advanced options panel
+        // Check for the advanced options panel by looking for its container elements
+        const advancedOptionsPanel = document.querySelector('[data-advanced-options-panel="true"]');
+        if (advancedOptionsPanel && advancedOptionsPanel.contains(target)) {
+          return;
+        }
+        
+        // Also check for any element with advanced options related classes
+        const clickedElement = target as Element;
+        if (clickedElement.closest && (
+          clickedElement.closest('[data-advanced-options-panel="true"]') ||
+          clickedElement.closest('.advanced-options-panel')
+        )) {
+          return;
+        }
+        
+        // Close the advanced options panel if clicking anywhere else
+        onAdvancedOptionsToggle(false);
+      }
+    };
+
+    if (showAdvancedOptionsPanel || showNotebookDropdown || showScreenDropdown) {
+      // Add a small delay to prevent immediate closing when opening
+      const timeoutId = setTimeout(() => {
+        document.addEventListener('mousedown', handleClickOutside);
+      }, 100);
+      
+      return () => {
+        clearTimeout(timeoutId);
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showAdvancedOptionsPanel, showNotebookDropdown, showScreenDropdown, onAdvancedOptionsToggle]);
+
+  // Handle typing with model preloading
+  const handleInputChange = useCallback((value: string) => {
+    setInput(value);
+    
+    // Auto-close advanced options when user starts typing
+    if (value.trim() && showAdvancedOptionsPanel && onAdvancedOptionsToggle) {
+      onAdvancedOptionsToggle(false);
+    }
+    
+
+    
+    // Trigger model preloading when user starts typing (debounced) - COMPLETELY SILENT
+    if (value.trim() && !hasPreloaded && onPreloadModel && !isLoading) {
+      // Clear any existing timeout
+      if (preloadTimeoutRef.current) {
+        clearTimeout(preloadTimeoutRef.current);
+      }
+      
+      // Set a debounced timeout to trigger preloading
+      preloadTimeoutRef.current = setTimeout(() => {
+        console.log('🚀 User started typing, preloading model silently...');
+        // Removed setIsPreloading(true) - no UI feedback during preload
+        onPreloadModel();
+        setHasPreloaded(true);
+        
+        // No UI feedback timeout needed anymore
+      }, 500); // 500ms debounce delay
+    }
+  }, [hasPreloaded, onPreloadModel, isLoading, showAdvancedOptionsPanel, onAdvancedOptionsToggle]);
+
+  // Reset preload state when input is cleared or message is sent
+  useEffect(() => {
+    if (!input.trim()) {
+      setHasPreloaded(false);
+      // Removed setIsPreloading(false) - no UI feedback needed
+      if (preloadTimeoutRef.current) {
+        clearTimeout(preloadTimeoutRef.current);
+        preloadTimeoutRef.current = null;
+      }
+    }
+  }, [input]);
+
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (preloadTimeoutRef.current) {
+        clearTimeout(preloadTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [input, adjustTextareaHeight]);
+
+  // File handling
+  const handleFilesAdded = useCallback((newFiles: File[]) => {
+    setFiles(prev => [...prev, ...newFiles]);
+  }, []);
+
+  const handleFileRemoved = useCallback((index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  // Drag and drop for entire component
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleDragEnter = (e: DragEvent) => {
+      e.preventDefault();
+      setDragCounter(prev => prev + 1);
+    };
+
+    const handleDragLeave = (e: DragEvent) => {
+      e.preventDefault();
+      setDragCounter(prev => prev - 1);
+    };
+
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault();
+      setDragCounter(0);
+      if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+        handleFilesAdded(Array.from(e.dataTransfer.files));
+        // Focus textarea after files are dropped
+        focusTextarea();
+      }
+    };
+
+    container.addEventListener('dragenter', handleDragEnter);
+    container.addEventListener('dragleave', handleDragLeave);
+    container.addEventListener('drop', handleDrop);
+
+    return () => {
+      container.removeEventListener('dragenter', handleDragEnter);
+      container.removeEventListener('dragleave', handleDragLeave);
+      container.removeEventListener('drop', handleDrop);
+    };
+  }, [handleFilesAdded, focusTextarea]);
+
+  // Convert File objects to ClaraFileAttachment with proper file reading
+  const convertFilesToAttachments = useCallback(async (files: File[]): Promise<ClaraFileAttachment[]> => {
+    const getFileType = (file: File): ClaraFileType => {
+      if (file.type.startsWith('image/')) return 'image';
+      if (file.type === 'application/pdf') return 'pdf';
+      if (['.js', '.ts', '.tsx', '.jsx', '.py', '.cpp', '.c', '.java'].some(ext => file.name.endsWith(ext))) return 'code';
+      if (['.json'].some(ext => file.name.endsWith(ext))) return 'json';
+      if (['.csv'].some(ext => file.name.endsWith(ext))) return 'csv';
+      if (['.md', '.txt', '.markdown', '.rtf'].some(ext => file.name.endsWith(ext))) return 'text';
+      if (['.doc', '.docx', '.odt', '.pdf', '.xls', '.xlsx', '.ods', '.ppt', '.pptx', '.odp', '.html', '.htm', '.xml'].some(ext => file.name.endsWith(ext))) return 'document';
+      return 'document';
+    };
+
+    const readFileAsBase64 = (file: File): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (reader.result && typeof reader.result === 'string') {
+            // Extract just the base64 part (after the comma)
+            const base64 = reader.result.split(',')[1];
+            resolve(base64);
+          } else {
+            reject(new Error('Failed to read file'));
+          }
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+    };
+
+    const readFileAsText = (file: File): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (reader.result && typeof reader.result === 'string') {
+            resolve(reader.result);
+          } else {
+            reject(new Error('Failed to read file as text'));
+          }
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsText(file);
+      });
+    };
+
+    const attachments: ClaraFileAttachment[] = [];
+    
+    // **NEW**: Backend document text extraction with frontend fallback
+    const extractTextViaBackend = async (file: File): Promise<string | null> => {
+      try {
+        // Check if backend is available by trying a health check first
+        const healthResponse = await fetch('http://localhost:5001/health', { 
+          method: 'GET',
+          signal: AbortSignal.timeout(2000) // 2 second timeout
+        });
+        
+        if (!healthResponse.ok) {
+          console.log('🔄 Backend not available, falling back to frontend processing');
+          return null;
+        }
+        
+        console.log(`🚀 Attempting backend text extraction for: ${file.name}`);
+        
+        // Create FormData for file upload
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        // Send to backend extraction endpoint
+        const response = await fetch('http://localhost:5001/extract-text', {
+          method: 'POST',
+          body: formData,
+          signal: AbortSignal.timeout(30000) // 30 second timeout for large files
+        });
+        
+        if (!response.ok) {
+          const errorData = await response.text();
+          console.warn(`⚠️ Backend extraction failed (${response.status}): ${errorData}`);
+          return null;
+        }
+        
+        const result = await response.json();
+        
+        if (result.status === 'success' && result.extracted_text) {
+          console.log(`✅ Backend extraction successful for ${file.name}:`, {
+            fileType: result.file_type,
+            textLength: result.extracted_text.length,
+            wordCount: result.text_stats.word_count,
+            fileSizeMB: result.file_size_mb
+          });
+          
+          return result.extracted_text;
+        } else {
+          console.warn('⚠️ Backend extraction returned no text content');
+          return null;
+        }
+        
+      } catch (error) {
+        // Handle timeout or network errors gracefully
+        if (error instanceof Error) {
+          if (error.name === 'TimeoutError') {
+            console.warn('⏱️ Backend extraction timeout, falling back to frontend');
+          } else if (error.name === 'AbortError') {
+            console.warn('🛑 Backend extraction aborted, falling back to frontend');
+          } else {
+            console.warn('🔄 Backend extraction error, falling back to frontend:', error.message);
+          }
+        } else {
+          console.warn('🔄 Unknown backend extraction error, falling back to frontend');
+        }
+        return null;
+      }
+    };
+    
+    // PDF processing functions
+    const extractTextFromPDF = async (file: File): Promise<string> => {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        
+        let fullText = '';
+        const numPages = pdf.numPages;
+        
+        for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+          const page = await pdf.getPage(pageNum);
+          const textContent = await page.getTextContent();
+          
+          const pageText = textContent.items
+            .map((item: any) => item.str)
+            .join(' ');
+          
+          fullText += `--- Page ${pageNum} ---\n${pageText}\n\n`;
+        }
+        
+        return fullText.trim();
+      } catch (error) {
+        console.error('Failed to extract text from PDF:', error);
+        throw error;
+      }
+    };
+
+    const convertPDFToImages = async (file: File, maxPages: number = 3): Promise<string[]> => {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        
+        const images: string[] = [];
+        const numPages = Math.min(pdf.numPages, maxPages); // Limit to avoid too many images
+        
+        for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+          const page = await pdf.getPage(pageNum);
+          const viewport = page.getViewport({ scale: 1.5 }); // Good balance of quality and size
+          
+          // Create canvas
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          canvas.height = viewport.height;
+          canvas.width = viewport.width;
+          
+          // Render page to canvas
+          await page.render({
+            canvasContext: context!,
+            viewport: viewport
+          }).promise;
+          
+          // Convert canvas to base64 image
+          const imageDataUrl = canvas.toDataURL('image/png');
+          const base64 = imageDataUrl.split(',')[1]; // Remove data:image/png;base64, prefix
+          images.push(base64);
+        }
+        
+        return images;
+      } catch (error) {
+        console.error('Failed to convert PDF to images:', error);
+        throw error;
+      }
+    };
+    
+    for (let index = 0; index < files.length; index++) {
+      const file = files[index];
+      const fileType = getFileType(file);
+      
+      try {
+        let base64: string | undefined;
+        let extractedText: string | undefined;
+        
+        // Handle different file types appropriately
+        if (fileType === 'image') {
+          // For images, convert to base64 for vision models
+          base64 = await readFileAsBase64(file);
+        } else if (fileType === 'text' || fileType === 'code' || fileType === 'json' || fileType === 'csv') {
+          // For text-based files, try backend first, then fallback to frontend
+          extractedText = await extractTextViaBackend(file);
+          if (!extractedText) {
+            console.log(`🔄 Using frontend text extraction for: ${file.name}`);
+            extractedText = await readFileAsText(file);
+          }
+        } else if (fileType === 'document') {
+          // **NEW**: For document types (DOC, DOCX, XLS, XLSX, PPT, PPTX, RTF, HTML, XML), try backend first
+          extractedText = await extractTextViaBackend(file);
+          if (!extractedText) {
+            console.log(`🔄 Backend extraction failed for document ${file.name}, storing as base64`);
+            base64 = await readFileAsBase64(file);
+          } else {
+            console.log(`✅ Backend successfully extracted text from document: ${file.name}`);
+          }
+        } else if (fileType === 'pdf') {
+          // For PDFs, try backend first, then frontend PDF extraction, then image conversion
+          extractedText = await extractTextViaBackend(file);
+          if (!extractedText) {
+            console.log(`🔄 Backend PDF extraction failed, trying frontend PDF extraction for: ${file.name}`);
+            try {
+              extractedText = await extractTextFromPDF(file);
+              console.log(`✅ Frontend successfully extracted text from PDF: ${file.name}`);
+            } catch (textError) {
+              console.warn(`Could not extract text from PDF, converting to images: ${textError}`);
+              try {
+                // Convert PDF to images as fallback
+                const pdfImages = await convertPDFToImages(file);
+                if (pdfImages.length > 0) {
+                  // Create multiple image attachments for each page
+                  for (let pageIndex = 0; pageIndex < pdfImages.length; pageIndex++) {
+                    const pageAttachment: ClaraFileAttachment = {
+                      id: `file-${Date.now()}-${index}-page-${pageIndex + 1}`,
+                      name: `${file.name} - Page ${pageIndex + 1}`,
+                      type: 'image',
+                      size: file.size / pdfImages.length, // Approximate size per page
+                      mimeType: 'image/png',
+                      base64: pdfImages[pageIndex],
+                      processed: true,
+                      processingResult: {
+                        success: true,
+                        metadata: {
+                          originalFile: file.name,
+                          pageNumber: pageIndex + 1,
+                          totalPages: pdfImages.length,
+                          convertedFromPDF: true,
+                          backendFallback: false
+                        }
+                      }
+                    };
+                    attachments.push(pageAttachment);
+                  }
+                  continue; // Skip the main attachment creation since we added page attachments
+                }
+              } catch (imageError) {
+                console.error(`Failed to convert PDF to images: ${imageError}`);
+                // Fall back to base64 as last resort (though this likely won't be useful)
+                base64 = await readFileAsBase64(file);
+              }
+            }
+          } else {
+            console.log(`✅ Backend successfully extracted text from PDF: ${file.name}`);
+          }
+        } else {
+          // For other file types, try backend first, then base64 fallback
+          extractedText = await extractTextViaBackend(file);
+          if (!extractedText) {
+            console.log(`🔄 Backend extraction failed for ${file.name}, storing as base64`);
+            base64 = await readFileAsBase64(file);
+          }
+        }
+
+        const attachment: ClaraFileAttachment = {
+          id: `file-${Date.now()}-${index}`,
+          name: file.name,
+          type: fileType,
+          size: file.size,
+          mimeType: file.type,
+          base64: base64,
+          processed: true,
+          processingResult: {
+            success: true,
+            extractedText: extractedText,
+            metadata: {
+              readAsText: !!extractedText,
+              readAsBase64: !!base64
+            }
+          }
+        };
+
+        attachments.push(attachment);
+      } catch (error) {
+        console.error(`Failed to process file ${file.name}:`, error);
+        
+        // Create attachment without content if reading fails
+        const attachment: ClaraFileAttachment = {
+          id: `file-${Date.now()}-${index}`,
+          name: file.name,
+          type: fileType,
+          size: file.size,
+          mimeType: file.type,
+          processed: false,
+          processingResult: {
+            success: false,
+            error: `Failed to read file: ${error instanceof Error ? error.message : 'Unknown error'}`
+          }
+        };
+        
+        attachments.push(attachment);
+      }
+    }
+    
+    return attachments;
+  }, []);
+
+  // Provider health check function
+  const checkProviderHealth = useCallback(async (): Promise<boolean> => {
+    if (!sessionConfig?.aiConfig?.provider) {
+      console.warn('No provider configured');
+      return false;
+    }
+
+    const currentProvider = providers.find(p => p.id === sessionConfig.aiConfig.provider);
+    if (!currentProvider) {
+      console.warn('Current provider not found');
+      return false;
+    }
+
+    setProviderHealthStatus('checking');
+
+    try {
+      // Check if it's Clara's Pocket (Clara Core)
+      if (currentProvider.type === 'claras-pocket') {
+        const llamaSwap = (window as any).llamaSwap;
+        if (llamaSwap?.getStatus) {
+          const status = await llamaSwap.getStatus();
+          const isHealthy = status.isRunning;
+          
+          if (!isHealthy) {
+            setOfflineProvider(currentProvider);
+            
+            // Check if the service is currently starting
+            if (status.isStarting) {
+              const startupMessage = status.currentStartupPhase 
+                ? `Clara's Pocket is starting: ${status.currentStartupPhase}`
+                : 'Clara\'s Pocket is starting up, please wait...';
+              
+              // Calculate duration
+              const durationText = status.startingDuration > 0 
+                ? ` (${status.startingDuration}s)`
+                : '';
+                
+              setProviderOfflineMessage(`${startupMessage}${durationText}`);
+            } else {
+              setProviderOfflineMessage(`Clara's Pocket is not running. Would you like to start it?`);
+            }
+            
+            setShowClaraCoreOffer(false); // Don't offer switch since this IS Clara Core
+            setShowProviderOfflineModal(true);
+            setProviderHealthStatus('unhealthy');
+            return false;
+          }
+        } else {
+          setOfflineProvider(currentProvider);
+          setProviderOfflineMessage(`Clara's Pocket service is not available.`);
+          setShowClaraCoreOffer(false);
+          setShowProviderOfflineModal(true);
+          setProviderHealthStatus('unhealthy');
+          return false;
+        }
+      } else {
+        // For other providers, use the health check API
+        const isHealthy = await claraApiService.testProvider(currentProvider);
+        
+        if (!isHealthy) {
+          setOfflineProvider(currentProvider);
+          setProviderOfflineMessage(`${currentProvider.name} is not responding. The service may be down or unreachable.`);
+          setShowClaraCoreOffer(true); // Offer to switch to Clara Core
+          setShowProviderOfflineModal(true);
+          setProviderHealthStatus('unhealthy');
+          return false;
+        }
+      }
+
+      setProviderHealthStatus('healthy');
+      return true;
+    } catch (error) {
+      console.error('Provider health check failed:', error);
+      setOfflineProvider(currentProvider);
+      setProviderOfflineMessage(`Failed to check ${currentProvider.name} status: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      setShowClaraCoreOffer(currentProvider.type !== 'claras-pocket');
+      setShowProviderOfflineModal(true);
+      setProviderHealthStatus('unhealthy');
+      return false;
+    }
+  }, [sessionConfig?.aiConfig?.provider, providers]);
+
+  // Poll for service status when the offline modal is shown and service is starting
+  useEffect(() => {
+    if (!showProviderOfflineModal) {
+      return;
+    }
+
+    // Check if we're showing a starting message
+    const isStarting = providerOfflineMessage.includes('starting');
+    if (!isStarting) {
+      return;
+    }
+
+    const pollInterval = setInterval(async () => {
+      // Re-check provider health to update the startup progress
+      const isHealthy = await checkProviderHealth();
+      
+      // If the service becomes healthy, hide the modal
+      if (isHealthy) {
+        setShowProviderOfflineModal(false);
+      }
+    }, 2000); // Poll every 2 seconds
+
+    return () => clearInterval(pollInterval);
+  }, [showProviderOfflineModal, providerOfflineMessage, checkProviderHealth]);
+
+  // Handle starting Clara Core
+  const handleStartClaraCore = useCallback(async () => {
+    if (offlineProvider?.type === 'claras-pocket') {
+      try {
+        const llamaSwap = (window as any).llamaSwap;
+        if (llamaSwap?.start) {
+          const result = await llamaSwap.start();
+          if (result.success) {
+            setShowProviderOfflineModal(false);
+            setProviderHealthStatus('healthy');
+          } else {
+            setProviderOfflineMessage(`Failed to start Clara's Pocket: ${result.error || 'Unknown error'}`);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to start Clara Core:', error);
+        setProviderOfflineMessage(`Failed to start Clara's Pocket: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    }
+  }, [offlineProvider]);
+
+  // Handle switching to Clara Core
+  const handleSwitchToClaraCore = useCallback(async () => {
+    try {
+      // Find Clara Core provider
+      const claraCoreProvider = providers.find(p => p.type === 'claras-pocket');
+      
+      if (!claraCoreProvider) {
+        console.error('Clara Core provider not found');
+        setProviderOfflineMessage('Clara Core provider is not available.');
+        return;
+      }
+
+      // Check if Clara Core is running
+      const llamaSwap = (window as any).llamaSwap;
+      if (llamaSwap?.getStatus) {
+        const status = await llamaSwap.getStatus();
+        
+        if (!status.isRunning) {
+          // Try to start Clara Core
+          if (llamaSwap?.start) {
+            const startResult = await llamaSwap.start();
+            if (!startResult.success) {
+              setProviderOfflineMessage(`Failed to start Clara's Pocket: ${startResult.error || 'Unknown error'}`);
+              return;
+            }
+            // Wait a moment for service to be ready
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          } else {
+            setProviderOfflineMessage('Clara Core service is not available.');
+            return;
+          }
+        }
+
+        // Switch to Clara Core provider
+        if (onProviderChange) {
+          onProviderChange(claraCoreProvider.id);
+          setShowProviderOfflineModal(false);
+          setProviderHealthStatus('healthy');
+        }
+      } else {
+        setProviderOfflineMessage('Clara Core service is not available.');
+      }
+    } catch (error) {
+      console.error('Failed to switch to Clara Core:', error);
+      setProviderOfflineMessage(`Failed to switch to Clara Core: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }, [providers, onProviderChange]);
+
+  // Send message
+  const handleSend = useCallback(async () => {
+    if (!input.trim() && files.length === 0) return;
+
+    // Check provider health before sending
+    const isProviderHealthy = await checkProviderHealth();
+    if (!isProviderHealthy) {
+      return; // Don't send message if provider is not healthy
+    }
+    
+    let attachments: ClaraFileAttachment[] | undefined;
+    let enhancedPrompt = input; // For AI processing
+    let displayAttachments: ClaraFileAttachment[] = []; // For UI display
+    
+    if (files.length > 0) {
+      try {
+        attachments = await convertFilesToAttachments(files);
+        console.log('Converted attachments:', attachments);
+        
+        // Extract text content from attachments and inject as context for AI
+        const textContents: string[] = [];
+        const imageAttachments: ClaraFileAttachment[] = [];
+        
+        attachments.forEach(attachment => {
+          // Create display-friendly attachment info
+          if (attachment.processingResult?.extractedText || attachment.type !== 'image') {
+            displayAttachments.push({
+              ...attachment,
+              // Clean up the attachment for display - remove large base64 data
+              base64: undefined,
+              processingResult: attachment.processingResult ? {
+                ...attachment.processingResult,
+                success: attachment.processingResult.success ?? false,
+                extractedText: attachment.processingResult?.extractedText ? '[Text content extracted]' : undefined
+              } : undefined
+            });
+          }
+          
+          if (attachment.processingResult?.extractedText) {
+            // Add text content as context for AI (not for display)
+            textContents.push(`--- Content from ${attachment.name} ---\n${attachment.processingResult.extractedText}\n--- End of ${attachment.name} ---\n`);
+          }
+          
+          // Keep image attachments for vision models (including PDF pages converted to images)
+          if (attachment.type === 'image' && attachment.base64) {
+            imageAttachments.push(attachment);
+            // Also add to display attachments if it's a regular image
+            if (!attachment.processingResult?.metadata?.convertedFromPDF) {
+              displayAttachments.push({
+                ...attachment,
+                base64: undefined, // Don't include base64 in display
+                processingResult: attachment.processingResult ? {
+                  ...attachment.processingResult,
+                  success: attachment.processingResult.success ?? false,
+                  extractedText: '[Image attachment]'
+                } : undefined
+              });
+            }
+          }
+        });
+        
+        // If we have text content, enhance the prompt for AI processing but keep original for display
+        if (textContents.length > 0) {
+          const contextText = textContents.join('\n');
+          enhancedPrompt = `${contextText}\n\nUser Question: ${input}`;
+          console.log('Enhanced prompt with file context for AI processing');
+        }
+        
+        // Only pass image attachments to the API (text content is now in the enhanced prompt)
+        attachments = imageAttachments.length > 0 ? imageAttachments : undefined;
+        
+      } catch (error) {
+        console.error('Failed to convert files to attachments:', error);
+        // Continue without attachments rather than failing completely
+        attachments = undefined;
+      }
+    }
+    
+    // Add screen capture if screen sharing is active
+    if (isScreenSharing) {
+      try {
+        const screenCapture = await captureScreen();
+        if (screenCapture) {
+          const screenAttachment: ClaraFileAttachment = {
+            id: `screen-capture-${Date.now()}`,
+            name: 'Screen Capture',
+            type: 'image',
+            size: 0, // Size not available for captures
+            mimeType: 'image/png',
+            base64: screenCapture,
+            processed: true,
+            processingResult: {
+              success: true,
+              metadata: {
+                isScreenCapture: true,
+                captureTime: new Date().toISOString()
+              }
+            }
+          };
+
+          // Add to attachments for AI
+          if (!attachments) {
+            attachments = [];
+          }
+          attachments.push(screenAttachment);
+
+          // Add to display attachments
+          displayAttachments.push({
+            ...screenAttachment,
+            base64: undefined, // Don't include base64 in display
+            processingResult: {
+              success: true,
+              extractedText: '[Screen Capture]'
+            }
+          });
+
+          addInfoNotification(
+            'Screen Captured',
+            'Current screen captured and included with your message.',
+            3000
+          );
+        }
+      } catch (error) {
+        console.error('Failed to capture screen for message:', error);
+        addErrorNotification(
+          'Screen Capture Failed',
+          'Could not capture screen for this message.',
+          3000
+        );
+      }
+    }
+    
+    // Query notebook if notebook mode is active
+    if (isNotebookMode && selectedNotebook) {
+      try {
+        console.log('📔 Querying notebook before sending message...');
+        setIsQueryingNotebook(true);
+        
+        // Show notebook querying indicator
+        addInfoNotification(
+          'Querying Notebook',
+          `Searching "${selectedNotebook.name}" for relevant context...`,
+          2000
+        );
+        
+        // Query the notebook using claraNotebookService
+        const notebookResponse = await claraNotebookService.sendChatMessage(selectedNotebook.id, {
+          question: input.trim(),
+          mode: 'hybrid',
+          response_type: 'Multiple Paragraphs',
+          top_k: 60,
+          use_chat_history: false
+        });
+        
+        if (notebookResponse.answer) {
+          console.log('📔 Notebook query successful, storing context for UI display...');
+          
+          // Instead of modifying the prompt, we'll store the notebook context
+          // and let the parent component handle it in the UI
+          const notebookContext = {
+            notebookName: selectedNotebook.name,
+            content: notebookResponse.answer,
+            citations: notebookResponse.citations || [],
+            userQuestion: input.trim()
+          };
+          
+          // Add notebook context to display metadata for UI rendering
+          const displayInfo = `[NOTEBOOK_CONTEXT:${JSON.stringify(notebookContext)}]`;
+          enhancedPrompt = `${displayInfo}\n\n${input}`;
+          
+          addInfoNotification(
+            'Context Found',
+            `Relevant information found in "${selectedNotebook.name}".`,
+            3000
+          );
+        } else {
+          console.warn('No relevant context found in notebook');
+          addInfoNotification(
+            'No Relevant Context',
+            'No specific information found in the notebook for your query.',
+            2000
+          );
+        }
+      } catch (error) {
+        console.error('Error querying notebook:', error);
+        addErrorNotification(
+          'Notebook Query Error',
+          'Failed to query notebook. Sending message without context.',
+          3000
+        );
+      } finally {
+        setIsQueryingNotebook(false);
+      }
+    }
+
+    // Send enhanced prompt to AI for processing, but original input for display
+    // Store the original input and display attachments in the enhanced prompt metadata
+    if (displayAttachments.length > 0) {
+      // Create a special metadata comment that can be parsed later for display
+      const displayInfo = `[DISPLAY_META:${JSON.stringify({
+        originalMessage: input,
+        displayAttachments: displayAttachments.map(att => ({
+          id: att.id,
+          name: att.name,
+          type: att.type,
+          size: att.size,
+          processed: att.processed
+        }))
+      })}]`;
+      enhancedPrompt = `${displayInfo}\n\n${enhancedPrompt}`;
+    }
+    
+    onSendMessage(enhancedPrompt, attachments);
+    
+    // Reset state
+    setInput('');
+    setFiles([]);
+    adjustTextareaHeight();
+    
+    // Reset preload state for next typing session
+    setHasPreloaded(false);
+    if (preloadTimeoutRef.current) {
+      clearTimeout(preloadTimeoutRef.current);
+      preloadTimeoutRef.current = null;
+    }
+    
+    // Focus the textarea after sending for immediate next input
+    focusTextarea();
+  }, [input, files, onSendMessage, convertFilesToAttachments, adjustTextareaHeight, focusTextarea, isScreenSharing, isNotebookMode, selectedNotebook, addInfoNotification, addErrorNotification]);
+
+  // Handle AI config changes
+  const handleAIConfigChange = useCallback((newConfig: Partial<ClaraAIConfig>) => {
+    // Ensure we have proper defaults for all required fields
+    const defaultMcp = {
+      enableTools: true,
+      enableResources: true,
+      enabledServers: ['python-mcp'],  // **CHANGED**: Default to python-mcp for agent mode
+      autoDiscoverTools: true,
+      maxToolCalls: 5
+    };
+
+    const defaultAutonomousAgent = {
+      enabled: currentAIConfig.autonomousAgent?.enabled ?? true,
+      maxRetries: 3,
+      retryDelay: 1000,
+      enableSelfCorrection: true,
+      enableToolGuidance: true,
+      enableProgressTracking: true,
+      maxToolCalls: 10,
+      confidenceThreshold: 0.8,
+      enableChainOfThought: false,
+      enableErrorLearning: true
+    };
+
+    const updatedConfig: ClaraAIConfig = {
+      ...currentAIConfig,
+      ...newConfig,
+      parameters: {
+        ...currentAIConfig.parameters,
+        ...newConfig.parameters
+      },
+      features: {
+        ...currentAIConfig.features,
+        ...newConfig.features
+      },
+      models: {
+        ...currentAIConfig.models,
+        ...newConfig.models
+      },
+      mcp: {
+        ...defaultMcp,
+        ...currentAIConfig.mcp,
+        ...newConfig.mcp
+      },
+      autonomousAgent: {
+        ...defaultAutonomousAgent,
+        ...currentAIConfig.autonomousAgent,
+        ...newConfig.autonomousAgent
+      }
+    };
+
+    onConfigChange?.({
+      aiConfig: updatedConfig,
+      // Legacy support
+      temperature: updatedConfig.parameters.temperature,
+      maxTokens: updatedConfig.parameters.maxTokens,
+      enableTools: updatedConfig.features.enableTools,
+      enableRAG: updatedConfig.features.enableRAG
+    });
+  }, [currentAIConfig, onConfigChange]);
+
+  // Handler to toggle between streaming and tools mode
+  const handleModeToggle = useCallback(() => {
+    const newStreamingMode = !isStreamingMode;
+    setIsStreamingMode(newStreamingMode);
+    
+    // Update AI config based on mode
+    const newConfig: Partial<ClaraAIConfig> = {
+      ...currentAIConfig,
+      features: {
+        ...currentAIConfig.features,
+        enableStreaming: newStreamingMode,
+        enableTools: !newStreamingMode,
+        enableMCP: !newStreamingMode
+      },
+      // Configure MCP servers based on mode
+      mcp: {
+        ...currentAIConfig.mcp,
+        enableTools: !newStreamingMode,
+        enableResources: !newStreamingMode,
+        enabledServers: newStreamingMode 
+          ? [] // Streaming mode: disable all MCP servers
+          : (() => {
+              // Agent mode: ensure python-mcp is included by default
+              const currentServers = currentAIConfig.mcp?.enabledServers || [];
+              const hasPythonMCP = currentServers.includes('python-mcp');
+              
+              if (!hasPythonMCP) {
+                console.log('🐍 Adding python-mcp server to enabled servers for agent mode');
+                return ['python-mcp', ...currentServers];
+              }
+              
+              return currentServers;
+            })(),
+        autoDiscoverTools: !newStreamingMode,
+        maxToolCalls: currentAIConfig.mcp?.maxToolCalls || 5
+      },
+      // When streaming mode is enabled, disable autonomous agent mode
+      // When tools mode is enabled, automatically enable autonomous agent mode
+      autonomousAgent: newStreamingMode ? {
+        // Streaming mode: disable autonomous
+        enabled: false,
+        maxRetries: currentAIConfig.autonomousAgent?.maxRetries || 3,
+        retryDelay: currentAIConfig.autonomousAgent?.retryDelay || 1000,
+        enableSelfCorrection: currentAIConfig.autonomousAgent?.enableSelfCorrection || true,
+        enableToolGuidance: currentAIConfig.autonomousAgent?.enableToolGuidance || true,
+        enableProgressTracking: currentAIConfig.autonomousAgent?.enableProgressTracking || true,
+        maxToolCalls: currentAIConfig.autonomousAgent?.maxToolCalls || 10,
+        confidenceThreshold: currentAIConfig.autonomousAgent?.confidenceThreshold || 0.7,
+        enableChainOfThought: currentAIConfig.autonomousAgent?.enableChainOfThought || true,
+        enableErrorLearning: currentAIConfig.autonomousAgent?.enableErrorLearning || true
+      } : {
+        // Tools mode: automatically enable autonomous
+        enabled: true,
+        maxRetries: currentAIConfig.autonomousAgent?.maxRetries || 3,
+        retryDelay: currentAIConfig.autonomousAgent?.retryDelay || 1000,
+        enableSelfCorrection: currentAIConfig.autonomousAgent?.enableSelfCorrection || true,
+        enableToolGuidance: currentAIConfig.autonomousAgent?.enableToolGuidance || true,
+        enableProgressTracking: currentAIConfig.autonomousAgent?.enableProgressTracking || true,
+        maxToolCalls: currentAIConfig.autonomousAgent?.maxToolCalls || 10,
+        confidenceThreshold: currentAIConfig.autonomousAgent?.confidenceThreshold || 0.7,
+        enableChainOfThought: currentAIConfig.autonomousAgent?.enableChainOfThought || true,
+        enableErrorLearning: currentAIConfig.autonomousAgent?.enableErrorLearning || true
+      }
+    };
+    
+    // Log the mode change for clarity
+    if (newStreamingMode) {
+      console.log('🌊 Switched to streaming mode - autonomous agent automatically disabled');
+    } else {
+      console.log('🛠️ Switched to tools mode - autonomous agent automatically enabled with python-mcp');
+    }
+    
+    handleAIConfigChange(newConfig);
+    
+    // Auto-start python-mcp server when switching to agent mode
+    if (!newStreamingMode) {
+      const currentServers = currentAIConfig.mcp?.enabledServers || [];
+      const hasPythonMCP = currentServers.includes('python-mcp');
+      
+      if (!hasPythonMCP) {
+        // Set flag to auto-start python-mcp (will be handled by useEffect)
+        setShouldAutoStartPythonMcp(true);
+      }
+    }
+  }, [isStreamingMode, currentAIConfig, handleAIConfigChange]);
+
+  // MCP helper functions
+  // Full lifecycle MCP server toggle - starts/stops servers and updates config
+  const handleMcpServerToggle = useCallback(async (serverName: string, shouldBeActive: boolean) => {
+    console.log(`🎛️ Toggling MCP server: ${serverName} to ${shouldBeActive ? 'active' : 'inactive'}`);
+    
+    // Add server to loading set
+    setTogglingServers(prev => new Set([...prev, serverName]));
+    
+    try {
+      const currentServers = currentAIConfig.mcp?.enabledServers || [];
+      const isCurrentlyEnabled = currentServers.includes(serverName);
+      
+      // Find the server to check if it's running
+      const server = mcpServers.find(s => s.name === serverName);
+      const isCurrentlyRunning = server?.isRunning ?? false;
+      
+      let serverOperationSuccess = true;
+      
+      if (shouldBeActive) {
+        // Want to make it active: ensure it's running AND enabled
+        if (!isCurrentlyRunning) {
+          console.log(`� Starting MCP server: ${serverName}`);
+          serverOperationSuccess = await claraMCPService.startServer(serverName);
+          
+          if (!serverOperationSuccess) {
+            console.error(`❌ Failed to start MCP server: ${serverName}`);
+            setTogglingServers(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(serverName);
+              return newSet;
+            });
+            return;
+          }
+        }
+        
+        // Add to enabled list if not already there
+        if (!isCurrentlyEnabled) {
+          const updatedServers = [...currentServers, serverName];
+          handleAIConfigChange({
+            mcp: {
+              enableTools: currentAIConfig.mcp?.enableTools ?? true,
+              enableResources: currentAIConfig.mcp?.enableResources ?? true,
+              autoDiscoverTools: currentAIConfig.mcp?.autoDiscoverTools ?? true,
+              maxToolCalls: currentAIConfig.mcp?.maxToolCalls ?? 5,
+              ...currentAIConfig.mcp,
+              enabledServers: updatedServers
+            }
+          });
+        }
+      } else {
+        // Want to make it inactive: remove from enabled (and optionally stop)
+        if (isCurrentlyEnabled) {
+          const updatedServers = currentServers.filter(name => name !== serverName);
+          handleAIConfigChange({
+            mcp: {
+              enableTools: currentAIConfig.mcp?.enableTools ?? true,
+              enableResources: currentAIConfig.mcp?.enableResources ?? true,
+              autoDiscoverTools: currentAIConfig.mcp?.autoDiscoverTools ?? true,
+              maxToolCalls: currentAIConfig.mcp?.maxToolCalls ?? 5,
+              ...currentAIConfig.mcp,
+              enabledServers: updatedServers
+            }
+          });
+        }
+        
+        // Optionally stop the server (we could keep it running for quick re-enable)
+        // For now, let's stop it to be clear about the inactive state
+        if (isCurrentlyRunning) {
+          console.log(`🛑 Stopping MCP server: ${serverName}`);
+          serverOperationSuccess = await claraMCPService.stopServer(serverName);
+          
+          if (!serverOperationSuccess) {
+            console.error(`❌ Failed to stop MCP server: ${serverName}`);
+            // Don't return here, config change was successful
+          }
+        }
+      }
+      
+      // Refresh the server list to show updated status
+      console.log('🔄 Refreshing server list after toggle...');
+      await claraMCPService.refreshServers();
+      const servers = claraMCPService.getAllServers();
+      setMcpServers(servers);
+      
+      // **NEW**: Refresh Clara's background services to update agent mode tool detection
+      console.log('🔄 Refreshing Clara services to update agent mode...');
+      try {
+        // Use the global refresh function to update Clara's background service
+        if ((window as any).refreshClaraServices) {
+          await (window as any).refreshClaraServices(true); // Force refresh to bypass cooldown
+          console.log('✅ Clara services refreshed successfully - agent mode should now detect MCP changes');
+        } else {
+          console.warn('⚠️ Global refreshClaraServices function not available');
+        }
+      } catch (refreshError) {
+        console.warn('⚠️ Failed to refresh Clara services:', refreshError);
+        // Don't fail the operation if refresh fails
+      }
+      
+      console.log(`✅ Successfully ${shouldBeActive ? 'activated' : 'deactivated'} MCP server: ${serverName}`);
+    } catch (error) {
+      console.error(`❌ Error toggling MCP server ${serverName}:`, error);
+      // Optionally show error notification
+    } finally {
+      // Remove server from loading set
+      setTogglingServers(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(serverName);
+        return newSet;
+      });
+    }
+  }, [currentAIConfig.mcp, handleAIConfigChange]);
+
+  // Auto-start python-mcp when flag is set
+  useEffect(() => {
+    if (shouldAutoStartPythonMcp && !isStreamingMode) {
+      console.log('🚀 Auto-starting python-mcp server for agent mode');
+      handleMcpServerToggle('python-mcp', true)
+        .then(() => {
+          console.log('✅ Successfully auto-started python-mcp');
+        })
+        .catch(error => {
+          console.error('❌ Failed to auto-start python-mcp:', error);
+        })
+        .finally(() => {
+          setShouldAutoStartPythonMcp(false); // Reset the flag
+        });
+    }
+  }, [shouldAutoStartPythonMcp, isStreamingMode, handleMcpServerToggle]);
+
+  // Filtered MCP servers for search
+  const filteredMcpServers = useMemo(() => {
+    if (!mcpSearchTerm) return mcpServers;
+    const searchLower = mcpSearchTerm.toLowerCase();
+    return mcpServers.filter(server => 
+      server.name.toLowerCase().includes(searchLower)
+    );
+  }, [mcpServers, mcpSearchTerm]);
+
+  // Load MCP servers from actual service
+  useEffect(() => {
+    const loadMcpServers = async () => {
+      if (!sessionConfig?.aiConfig?.features.enableMCP) return;
+      
+      try {
+        await claraMCPService.refreshServers();
+        // Show ALL servers (including disabled/stopped ones)
+        const servers = claraMCPService.getAllServers();
+        setMcpServers(servers);
+        console.log(`📋 Loaded ${servers.length} MCP servers for selector:`, servers.map(s => ({ 
+          name: s.name, 
+          isRunning: s.isRunning, 
+          status: s.status,
+          enabled: s.config?.enabled 
+        })));
+      } catch (error) {
+        console.error('Failed to load MCP servers:', error);
+        setMcpServers([]);
+      }
+    };
+
+    if (!isStreamingMode) {
+      loadMcpServers();
+    }
+  }, [isStreamingMode, sessionConfig?.aiConfig?.features.enableMCP]);
+
+  // Handle MCP selector toggle with automatic refresh
+  const handleMcpSelectorToggle = useCallback(async () => {
+    if (isStreamingMode) return; // Don't allow in streaming mode
+    
+    const willOpen = !showMcpSelector;
+    
+    if (willOpen) {
+      // Refresh MCP servers when opening the selector
+      console.log('🔄 Refreshing MCP servers on selector open...');
+      try {
+        await claraMCPService.refreshServers();
+        // Get ALL servers (including disabled/stopped ones)
+        const servers = claraMCPService.getAllServers();
+        setMcpServers(servers);
+        console.log(`✅ MCP servers refreshed: ${servers.length} servers found (including disabled/stopped)`);
+      } catch (error) {
+        console.error('❌ Failed to refresh MCP servers:', error);
+        // Still show the selector even if refresh fails
+      }
+    }
+    
+    setShowMcpSelector(willOpen);
+  }, [showMcpSelector, isStreamingMode]);
+
+  // Close MCP selector when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element;
+      if (showMcpSelector && !target.closest('[data-mcp-selector]')) {
+        setShowMcpSelector(false);
+      }
+    };
+
+    if (showMcpSelector) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showMcpSelector]);
+
+  // Get current selected model for display
+  const getCurrentModel = () => {
+    if (currentAIConfig.features.autoModelSelection) {
+      return 'Auto Mode';
+    }
+    
+    const textModel = models.find(m => m.id === currentAIConfig.models.text);
+    return textModel?.name || 'No model selected';
+  };
+
+  // Get the model that would be selected in auto mode based on current context
+  const getAutoSelectedModel = () => {
+    if (!currentAIConfig.features.autoModelSelection) {
+      return null;
+    }
+
+    // Check for images in current files
+    const hasImages = files.some(file => file.type.startsWith('image/'));
+    
+    // Check for code-related content
+    const hasCodeFiles = files.some(file => {
+      const codeExtensions = ['.js', '.ts', '.tsx', '.jsx', '.py', '.cpp', '.c', '.java', '.go', '.rs', '.php', '.rb', '.swift', '.kt'];
+      return codeExtensions.some(ext => file.name.endsWith(ext));
+    });
+    const hasCodeKeywords = /\b(code|programming|function|class|variable|debug|compile|syntax|algorithm|script|development|coding|software)\b/i.test(input);
+    const hasCodeContext = hasCodeFiles || hasCodeKeywords;
+    
+    // Check for tools mode (non-streaming mode typically uses tools)
+    const isToolsMode = currentAIConfig.features.enableTools && !currentAIConfig.features.enableStreaming;
+    
+    // Model selection logic (same as in API service)
+    if (hasImages && currentAIConfig.models.vision && currentAIConfig.features.enableStreaming) {
+      const visionModel = models.find(m => m.id === currentAIConfig.models.vision);
+      return { type: 'vision', model: visionModel, reason: 'Images detected' };
+    }
+    
+    if (isToolsMode && currentAIConfig.models.code) {
+      const codeModel = models.find(m => m.id === currentAIConfig.models.code);
+      return { type: 'code', model: codeModel, reason: 'Tools mode' };
+    }
+    
+    if (hasCodeContext && currentAIConfig.models.code && currentAIConfig.features.enableStreaming) {
+      const codeModel = models.find(m => m.id === currentAIConfig.models.code);
+      return { type: 'code', model: codeModel, reason: 'Code context' };
+    }
+    
+    // Default to text model
+    const textModel = models.find(m => m.id === currentAIConfig.models.text);
+    return { type: 'text', model: textModel, reason: 'General text' };
+  };
+
+  // Handle keyboard shortcuts
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+    
+    // Toggle streaming vs tools mode with Ctrl+M (or Cmd+M on Mac)
+    if (e.key === 'm' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      handleModeToggle();
+    }
+  }, [handleSend, handleModeToggle]);
+
+  // Handle clipboard paste for images and files
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    console.log('🔄 Paste event triggered');
+    
+    const clipboardData = e.clipboardData;
+    if (!clipboardData) {
+      console.log('❌ No clipboard data available');
+      return;
+    }
+
+    console.log('📋 Clipboard data available');
+    
+    // Check if there are files in the clipboard
+    const items = Array.from(clipboardData.items);
+    console.log('📄 Clipboard items:', items.length);
+    console.log('📄 Item types:', items.map(item => ({ type: item.type, kind: item.kind })));
+    
+    // Look for any file items (images, PDFs, documents, etc.)
+    const fileItems = items.filter(item => item.kind === 'file');
+    console.log('� File items found:', fileItems.length);
+    
+    if (fileItems.length > 0) {
+      console.log('✅ Processing file items...');
+      e.preventDefault(); // Prevent default paste behavior for files
+      
+      const files: globalThis.File[] = [];
+      fileItems.forEach((item, index) => {
+        console.log(`� Processing file item ${index + 1}:`, item.type);
+        const file = item.getAsFile();
+        if (file) {
+          console.log('✅ Got file from clipboard:', file.name, file.size, 'bytes', file.type);
+          
+          // Create a more descriptive filename based on file type
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          let fileName = `pasted-file-${timestamp}`;
+          let extension = '';
+          
+          // Determine appropriate extension based on MIME type
+          if (item.type.startsWith('image/')) {
+            extension = item.type.split('/')[1] || 'png';
+            fileName = `pasted-image-${timestamp}.${extension}`;
+          } else if (item.type === 'application/pdf') {
+            fileName = `pasted-document-${timestamp}.pdf`;
+          } else if (item.type === 'text/plain') {
+            fileName = `pasted-text-${timestamp}.txt`;
+          } else {
+            // Try to extract extension from MIME type
+            const mimeExtension = item.type.split('/')[1];
+            if (mimeExtension) {
+              fileName = `pasted-file-${timestamp}.${mimeExtension}`;
+            }
+          }
+          
+          const newFile = new globalThis.File([file], fileName, {
+            type: file.type
+          });
+          files.push(newFile);
+          console.log('📝 Created new file:', newFile.name);
+        } else {
+          console.log('❌ Could not get file from item');
+        }
+      });
+      
+      if (files.length > 0) {
+        console.log(`🚀 Adding ${files.length} files to handler`);
+        handleFilesAdded(files);
+      } else {
+        console.log('❌ No files to add');
+      }
+    } else {
+      console.log('📝 No file items found, allowing default paste behavior');
+    }
+    // If no files, let the default paste behavior handle text
+  }, [handleFilesAdded]);
+
+  // Quick action handlers
+  const handleNewChat = useCallback(() => {
+    setInput('');
+    setFiles([]);
+    onNewChat?.();
+    
+    // Focus the textarea after starting new chat
+    focusTextarea();
+  }, [onNewChat, focusTextarea]);
+
+  const triggerFileUpload = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*,.pdf,.txt,.md,.json,.csv,.js,.ts,.tsx,.jsx,.py,.cpp,.c,.java,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.rtf,.html,.htm,.xml,.odt,.ods,.odp';
+    input.multiple = true;
+    input.onchange = (e) => {
+      const target = e.target as HTMLInputElement;
+      if (target.files) {
+        handleFilesAdded(Array.from(target.files));
+        // Focus textarea after files are added
+        focusTextarea();
+      }
+    };
+    input.click();
+  }, [handleFilesAdded, focusTextarea]);
+
+  // Voice chat handlers - simplified for transcription only
+  const handleVoiceAudio = useCallback(async (audioBlob: Blob) => {
+    setIsVoiceProcessing(true);
+    try {
+      // Simple transcription only - no AI processing
+      const result = await claraVoiceService.transcribeAudio(audioBlob);
+      
+      if (result.success && result.transcription.trim()) {
+        const originalTranscription = result.transcription.trim();
+        
+        // Add voice mode prefix for AI context
+        const voiceModePrefix = "Warning: You are in speech mode, make sure to reply in few lines:  \n";
+        let messageWithPrefix = voiceModePrefix + originalTranscription;
+        
+        console.log('🎤 Transcription complete:', originalTranscription);
+        console.log('🎤 Sending message with voice mode prefix to AI');
+        
+        // Initialize attachments array for screen capture and any other attachments
+        let attachments: ClaraFileAttachment[] | undefined;
+        
+        // Add screen capture if screen sharing is active
+        if (isScreenSharing) {
+          try {
+            const screenCapture = await captureScreen();
+            if (screenCapture) {
+              const screenAttachment: ClaraFileAttachment = {
+                id: `screen-capture-${Date.now()}`,
+                name: 'Screen Capture',
+                type: 'image',
+                size: 0, // Size not available for captures
+                mimeType: 'image/png',
+                base64: screenCapture,
+                processed: true,
+                processingResult: {
+                  success: true,
+                  metadata: {
+                    isScreenCapture: true,
+                    captureTime: new Date().toISOString()
+                  }
+                }
+              };
+
+              // Add to attachments for AI
+              if (!attachments) {
+                attachments = [];
+              }
+              attachments.push(screenAttachment);
+
+              // Add display metadata for screen capture
+              const displayAttachments = [{
+                id: screenAttachment.id,
+                name: screenAttachment.name,
+                type: screenAttachment.type,
+                size: screenAttachment.size,
+                processed: screenAttachment.processed
+              }];
+
+              // Create a special metadata comment that can be parsed later for display
+              const displayInfo = `[DISPLAY_META:${JSON.stringify({
+                originalMessage: originalTranscription,
+                displayAttachments: displayAttachments
+              })}]`;
+              messageWithPrefix = `${displayInfo}\n\n${messageWithPrefix}`;
+
+              addInfoNotification(
+                'Screen Captured',
+                'Current screen captured and included with your voice message.',
+                3000
+              );
+
+              console.log('🎤 Screen capture added to voice message');
+            }
+          } catch (error) {
+            console.error('Failed to capture screen for voice message:', error);
+            addErrorNotification(
+              'Screen Capture Failed',
+              'Could not capture screen for this voice message.',
+              3000
+            );
+          }
+        }
+        
+        // Send the prefixed message to AI using the existing onSendMessage prop
+        // The parent component will handle the actual message sending and display
+        if (onSendMessage) {
+          // Send the message with attachments if screen capture was successful
+          onSendMessage(messageWithPrefix, attachments);
+        }
+        
+      } else {
+        console.error('Transcription failed:', result.error);
+        // Could show a toast notification here
+      }
+    } catch (error) {
+      console.error('Voice transcription error:', error);
+      // Could show a toast notification here
+    } finally {
+      setIsVoiceProcessing(false);
+    }
+  }, [onSendMessage, isScreenSharing, addInfoNotification, addErrorNotification]);
+
+  // Simple voice mode toggle
+  const handleVoiceModeToggle = useCallback(() => {
+    // Check if Python backend is available
+    if (!pythonBackendStatus.isHealthy) {
+      addErrorNotification(
+        'Python Backend Required',
+        'Voice functionality requires Python backend. Please start the Python backend first.',
+        5000
+      );
+      return;
+    }
+
+    if (isVoiceChatEnabled) {
+      // Deactivate voice mode
+      setIsVoiceChatEnabled(false);
+      setShowVoiceChat(false);
+      console.log('🎤 Voice mode deactivated');
+    } else {
+      // Activate voice mode immediately
+      setIsVoiceChatEnabled(true);
+      setShowVoiceChat(true);
+      console.log('🎤 Voice mode activated - ready to listen');
+      addInfoNotification('Voice mode activated! Click and hold the microphone to speak.', 'Voice input is now ready for use.', 4000);
+    }
+  }, [isVoiceChatEnabled, pythonBackendStatus.isHealthy, addErrorNotification, addInfoNotification]);
+
+  const handleVoiceToggle = useCallback(() => {
+    setIsVoiceChatEnabled(!isVoiceChatEnabled);
+  }, [isVoiceChatEnabled]);
+
+  // Python backend handlers for voice functionality
+  const checkPythonBackendStatus = useCallback(async () => {
+    try {
+      if (!(window as any).electronAPI) {
+        setPythonBackendStatus({ isHealthy: false, serviceUrl: null, error: 'Electron API not available' });
+        return;
+      }
+
+      const status = await (window as any).electronAPI.invoke('check-python-status');
+      setPythonBackendStatus({
+        isHealthy: status.isHealthy || false,
+        serviceUrl: status.serviceUrl,
+        error: status.error
+      });
+    } catch (error) {
+      console.error('Error checking Python backend status:', error);
+      setPythonBackendStatus({ 
+        isHealthy: false, 
+        serviceUrl: null, 
+        error: error instanceof Error ? error.message : 'Unknown error' 
+      });
+    }
+  }, []);
+
+  const handleStartPythonBackend = useCallback(async () => {
+    try {
+      if (!(window as any).electronAPI) {
+        addErrorNotification(
+          'Python Backend Error',
+          'Electron API not available'
+        );
+        return;
+      }
+
+      setIsPythonStarting(true);
+      console.log('🐍 Starting Python backend for voice functionality...');
+      
+      addInfoNotification(
+        'Starting Python Backend',
+        'Starting Python backend for voice functionality...',
+        3000
+      );
+
+      const result = await (window as any).electronAPI.invoke('start-python-container');
+      
+      if (result.success) {
+        console.log('✅ Python backend started successfully');
+        addInfoNotification('Python backend started successfully! Voice input is now available.', 'Voice functionality is now ready to use.', 5000);
+        // Recheck status after successful start
+        await checkPythonBackendStatus();
+      } else {
+        console.error('❌ Failed to start Python backend:', result.error);
+        addErrorNotification(
+          'Python Backend Failed',
+          `Failed to start Python backend: ${result.error}. Please ensure Docker is running.`, 
+          7000
+        );
+      }
+    } catch (error) {
+      console.error('Error starting Python backend:', error);
+      addErrorNotification(
+        'Python Backend Error',
+        `Error starting Python backend: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        7000
+      );
+    } finally {
+      setIsPythonStarting(false);
+    }
+  }, [checkPythonBackendStatus, addInfoNotification, addErrorNotification]);
+
+  // Quick recording handlers for mic button
+  const handleQuickRecording = useCallback(async () => {
+    if (isQuickRecording) {
+      // Stop recording
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      setIsQuickRecording(false);
+      setQuickRecordingProgress(0);
+    } else {
+      // Start recording
+      if (!pythonBackendStatus.isHealthy) {
+        // Start Python backend if not available
+        handleStartPythonBackend();
+        return;
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            sampleRate: 16000
+          }
+        });
+
+        recordingChunksRef.current = [];
+        const mediaRecorder = new MediaRecorder(stream, {
+          mimeType: 'audio/webm;codecs=opus'
+        });
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            recordingChunksRef.current.push(event.data);
+          }
+        };
+
+        mediaRecorder.onstop = async () => {
+          // Stop all tracks
+          stream.getTracks().forEach(track => track.stop());
+          
+          if (recordingChunksRef.current.length > 0) {
+            const audioBlob = new Blob(recordingChunksRef.current, { type: 'audio/webm;codecs=opus' });
+            setIsVoiceProcessing(true);
+            
+            try {
+              // Initialize voice service with current backend URL
+              const { ClaraVoiceService } = await import('../../services/claraVoiceService');
+              const voiceService = new ClaraVoiceService(pythonBackendStatus.serviceUrl || 'http://localhost:5001');
+              
+              // Use the voice service for transcription
+              const result = await voiceService.transcribeAudio(audioBlob);
+
+              if (result.success && result.transcription) {
+                // Add transcribed text to input field
+                setInput(prev => {
+                  const newText = prev ? `${prev} ${result.transcription}` : result.transcription;
+                  return newText;
+                });
+                focusTextarea();
+                addInfoNotification('Voice Recorded', `Transcribed: "${result.transcription}"`, 3000);
+              } else {
+                addErrorNotification('Recording Error', result.error || 'No speech detected in recording.', 3000);
+              }
+            } catch (error) {
+              console.error('Transcription error:', error);
+              addErrorNotification('Transcription Error', `Failed to transcribe audio: ${error instanceof Error ? error.message : 'Unknown error'}`, 5000);
+            } finally {
+              setIsVoiceProcessing(false);
+            }
+          }
+        };
+
+        mediaRecorderRef.current = mediaRecorder;
+        mediaRecorder.start();
+        setIsQuickRecording(true);
+
+        // Start progress animation (10 second max)
+        let progress = 0;
+        recordingTimerRef.current = setInterval(() => {
+          progress += 1; // 1% per 100ms = 10 seconds total
+          setQuickRecordingProgress(progress);
+          
+          if (progress >= 100) {
+            // Auto-stop after 10 seconds
+            if (mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+            }
+            if (recordingTimerRef.current) {
+              clearInterval(recordingTimerRef.current);
+              recordingTimerRef.current = null;
+            }
+            setIsQuickRecording(false);
+            setQuickRecordingProgress(0);
+          }
+        }, 100);
+
+        addInfoNotification('Recording Started', 'Speak now. Click mic again to stop or wait 10 seconds for auto-stop.', 3000);
+
+      } catch (error) {
+        console.error('Error starting recording:', error);
+        addErrorNotification('Recording Error', `Failed to start recording: ${error instanceof Error ? error.message : 'Unknown error'}`, 5000);
+        setIsQuickRecording(false);
+        setQuickRecordingProgress(0);
+      }
+    }
+  }, [isQuickRecording, pythonBackendStatus, handleStartPythonBackend, focusTextarea, setInput, addInfoNotification, addErrorNotification]);
+
+  // Cleanup recording resources on unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+    };
+  }, []);
+
+  // Notebook management functions
+  const loadAvailableNotebooks = useCallback(async () => {
+    setIsLoadingNotebooks(true);
+    try {
+      const notebooks = await claraNotebookService.listNotebooks();
+      setAvailableNotebooks(notebooks);
+      return notebooks;
+    } catch (error) {
+      console.error('Failed to load notebooks:', error);
+      addErrorNotification(
+        'Notebook Loading Failed',
+        'Could not load available notebooks. Make sure the notebook backend is running.',
+        5000
+      );
+      return [];
+    } finally {
+      setIsLoadingNotebooks(false);
+    }
+  }, []);
+
+  const handleNotebookModeToggle = useCallback(async () => {
+    if (isNotebookMode) {
+      // Disable notebook mode
+      setIsNotebookMode(false);
+      setSelectedNotebook(null);
+      addInfoNotification(
+        'Notebook Mode Disabled',
+        'Clara will now respond normally without notebook context.',
+        3000
+      );
+    } else {
+      // Enable notebook mode - show picker
+      const notebooks = await loadAvailableNotebooks();
+      if (notebooks.length === 0) {
+        addErrorNotification(
+          'No Notebooks Available',
+          'Create a notebook first using the Notebooks section before enabling notebook mode.',
+          5000
+        );
+        return;
+      }
+      setShowNotebookPicker(true);
+    }
+  }, [isNotebookMode, loadAvailableNotebooks]);
+
+  const handleNotebookSelect = useCallback((notebook: any) => {
+    setSelectedNotebook(notebook);
+    setIsNotebookMode(true);
+    setShowNotebookPicker(false);
+    addInfoNotification(
+      'Notebook Mode Enabled',
+      `Clara will now use "${notebook.name}" notebook context to enhance responses.`,
+      4000
+    );
+  }, []);
+
+  // Screen share handler
+  const handleScreenShare = useCallback(async () => {
+    try {
+      if (isScreenSharing) {
+        // Stop screen sharing
+        if (screenStream) {
+          screenStream.getTracks().forEach(track => track.stop());
+          setScreenStream(null);
+          setIsScreenSharing(false);
+          
+          // Clean up video element
+          if (screenVideoRef.current) {
+            screenVideoRef.current.srcObject = null;
+          }
+          
+          addInfoNotification(
+            'Screen Sharing Stopped',
+            'Clara is no longer capturing your screen.',
+            3000
+          );
+        }
+        return;
+      }
+
+      // Check if we're in Electron
+      const isElectron = typeof window !== 'undefined' && window.electronScreenShare;
+      
+      if (isElectron) {
+        // Electron screen sharing with picker
+        try {
+          // Check screen access permission on macOS
+          const accessStatus = await window.electronScreenShare?.getScreenAccessStatus();
+          if (accessStatus?.status === 'denied') {
+            const requestResult = await window.electronScreenShare?.requestScreenAccess();
+            if (!requestResult?.granted) {
+              addErrorNotification(
+                'Permission Denied',
+                'Screen recording permission is required. Please grant permission in System Preferences.',
+                7000
+              );
+              return;
+            }
+          }
+
+          // Get available desktop sources
+          const sources = await window.electronScreenShare?.getDesktopSources();
+          if (!sources || sources.length === 0) {
+            addErrorNotification(
+              'No Screens Available',
+              'No screens or windows available for sharing.',
+              5000
+            );
+            return;
+          }
+
+          // Show screen source picker
+          setAvailableSources(sources);
+          setShowScreenPicker(true);
+
+        } catch (electronError: any) {
+          console.error('Electron screen share error:', electronError);
+          addErrorNotification(
+            'Screen Sharing Failed',
+            `Failed to start screen sharing: ${electronError?.message || 'Unknown error'}`,
+            5000
+          );
+        }
+      } else {
+        // Browser screen sharing fallback
+        if (!navigator.mediaDevices?.getDisplayMedia) {
+          addErrorNotification(
+            'Screen Sharing Not Supported',
+            'Your browser does not support screen sharing. Please use Chrome, Firefox, or Edge.',
+            5000
+          );
+          return;
+        }
+
+        try {
+          const stream = await navigator.mediaDevices.getDisplayMedia({
+            video: { 
+              width: { ideal: 3840, max: 3840 }, // 4K support
+              height: { ideal: 2160, max: 2160 },
+              frameRate: { ideal: 60, max: 60 } // Higher frame rate
+            },
+            audio: false
+          });
+
+          if (!screenVideoRef.current) {
+            screenVideoRef.current = document.createElement('video');
+            screenVideoRef.current.style.display = 'none';
+            document.body.appendChild(screenVideoRef.current);
+          }
+
+          screenVideoRef.current.srcObject = stream;
+          await screenVideoRef.current.play();
+
+          setScreenStream(stream);
+          setIsScreenSharing(true);
+
+          stream.getVideoTracks()[0].addEventListener('ended', () => {
+            setIsScreenSharing(false);
+            setScreenStream(null);
+            if (screenVideoRef.current) {
+              screenVideoRef.current.srcObject = null;
+            }
+          });
+
+          addInfoNotification(
+            'Screen Sharing Active',
+            'Clara will now capture your screen with each message.',
+            5000
+          );
+        } catch (error: any) {
+          addErrorNotification(
+            'Screen Sharing Failed',
+            error.name === 'NotAllowedError' ? 'Permission denied' : 'Failed to start screen sharing',
+            5000
+          );
+        }
+      }
+    } catch (error: any) {
+      console.error('Screen share error:', error);
+      addErrorNotification(
+        'Screen Sharing Failed',
+        'An unexpected error occurred',
+        5000
+      );
+    }
+  }, [isScreenSharing, screenStream]);
+
+  // Capture screen as base64 image
+  const captureScreen = useCallback(async (): Promise<string | null> => {
+    if (!isScreenSharing || !screenVideoRef.current || !screenStream) {
+      return null;
+    }
+
+    try {
+      const video = screenVideoRef.current;
+      
+      // Check if video is ready and has valid dimensions
+      if (video.readyState < 2) {
+        // Wait for video to be ready with timeout
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('Video load timeout'));
+          }, 3000);
+          
+          const handleLoaded = () => {
+            clearTimeout(timeout);
+            resolve(void 0);
+          };
+          
+          if (video.readyState >= 2) {
+            clearTimeout(timeout);
+            resolve(void 0);
+          } else {
+            video.addEventListener('loadeddata', handleLoaded, { once: true });
+            video.addEventListener('canplay', handleLoaded, { once: true });
+          }
+        });
+      }
+
+      // Verify video has valid dimensions
+      if (video.videoWidth === 0 || video.videoHeight === 0) {
+        throw new Error('Video has invalid dimensions');
+      }
+
+      // Create canvas to capture the frame
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      if (!ctx) {
+        throw new Error('Failed to get canvas context');
+      }
+
+      // Set canvas size to match video (preserve original resolution)
+      let { videoWidth, videoHeight } = video;
+      
+      // Only scale down if absolutely necessary for memory/performance
+      const maxWidth = 3840; // 4K support
+      const maxHeight = 2160;
+      
+      if (videoWidth > maxWidth || videoHeight > maxHeight) {
+        const ratio = Math.min(maxWidth / videoWidth, maxHeight / videoHeight);
+        videoWidth = Math.floor(videoWidth * ratio);
+        videoHeight = Math.floor(videoHeight * ratio);
+      }
+
+      canvas.width = videoWidth;
+      canvas.height = videoHeight;
+
+      // Use high-quality rendering
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+
+      // Draw current video frame to canvas
+      ctx.drawImage(video, 0, 0, videoWidth, videoHeight);
+
+      // Convert to base64 with highest quality
+      // Use PNG for lossless quality, fallback to high-quality JPEG if PNG is too large
+      let dataURL = canvas.toDataURL('image/png'); // Lossless PNG
+      
+      // If PNG is too large (>10MB base64), use high-quality JPEG
+      if (dataURL.length > 10 * 1024 * 1024) {
+        dataURL = canvas.toDataURL('image/jpeg', 0.95); // 95% quality JPEG
+      }
+      
+      const base64 = dataURL.split(',')[1]; // Remove data URL prefix
+
+      return base64;
+    } catch (error) {
+      console.error('Failed to capture screen:', error);
+      addErrorNotification(
+        'Screen Capture Failed',
+        `Failed to capture current screen: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        3000
+      );
+      return null;
+    }
+  }, [isScreenSharing, screenStream]);
+
+  // Add token formatting utility function
+  const formatTokens = (tokens: number): string => {
+    if (tokens <= 1000) {
+      return tokens.toString();
+    } else {
+      return `${(tokens / 1000).toFixed(1)}k`;
+    }
+  };
+
+  // Check for provider health when switching modes
+  useEffect(() => {
+    if (sessionConfig?.aiConfig?.provider) {
+      checkProviderHealth();
+    }
+  }, [sessionConfig?.aiConfig?.provider, checkProviderHealth]);
+
+  // Load available image models for image generation
+  useEffect(() => {
+    const loadImageModels = async () => {
+      try {
+        // Check if ComfyUI is available
+        if (!(window as any).electronAPI) {
+          console.log('ComfyUI not available - electronAPI not found');
+          return;
+        }
+        
+        // Get ComfyUI service status using the specific ComfyUI status handler
+        const comfyuiStatus = await (window as any).electronAPI.invoke('comfyui-status');
+        
+        // console.log('🎨 ComfyUI Status Check:', comfyuiStatus);
+        
+        // Check if ComfyUI is running (status.running should be true)
+        if (comfyuiStatus.running) {
+          // Try to connect to ComfyUI and get models
+          try {
+            const { Client } = await import('@stable-canvas/comfyui-client');
+            const url = comfyuiStatus.url || `http://localhost:${comfyuiStatus.port || 8188}`;
+            let processedUrl = url;
+            if (url.includes('http://') || url.includes('https://')) {
+              processedUrl = url.split('//')[1];
+            }
+            const ssl_type = url.includes('https') ? true : false;
+            
+            console.log('🔗 Connecting to ComfyUI at:', url);
+            const client = new Client({ api_host: processedUrl, ssl: ssl_type });
+            
+            // Try to connect and get models
+            client.connect();
+            
+            // Wait for connection with timeout
+            const waitForConnection = new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => {
+                reject(new Error('Connection timeout'));
+              }, 5000);
+              
+              const checkConnection = () => {
+                if (client.socket && client.socket.readyState === WebSocket.OPEN) {
+                  clearTimeout(timeout);
+                  resolve(true);
+                } else {
+                  setTimeout(checkConnection, 100);
+                }
+              };
+              
+              checkConnection();
+            });
+            
+            await waitForConnection;
+            
+            // Get models
+            const models = await client.getSDModels();
+            setAvailableImageModels(models);
+            setImageGenEnabled(models.length > 0);
+            console.log('✅ Loaded', models.length, 'image generation models');
+            
+            // Clean up client
+            client.close();
+            
+          } catch (error) {
+            console.log('❌ Failed to connect to ComfyUI:', error);
+            setImageGenEnabled(false);
+            setAvailableImageModels([]);
+          }
+        } else {
+          console.log('⚠️ ComfyUI service not running, status:', comfyuiStatus.running, 'error:', comfyuiStatus.error);
+          setImageGenEnabled(false);
+          setAvailableImageModels([]);
+        }
+      } catch (error) {
+        console.log('❌ Error loading image models:', error);
+        setImageGenEnabled(false);
+        setAvailableImageModels([]);
+      }
+    };
+
+    // Load models immediately
+    loadImageModels();
+    
+    // Set up periodic refresh every 30 seconds
+    const interval = setInterval(loadImageModels, 30000);
+    
+    // Cleanup interval on unmount
+    return () => clearInterval(interval);
+  }, []);
+
+  // Check Python backend status for voice functionality
+  useEffect(() => {
+    // Check status immediately
+    checkPythonBackendStatus();
+    
+    // Set up periodic check every 30 seconds
+    const interval = setInterval(checkPythonBackendStatus, 30000);
+    
+    // Cleanup interval on unmount
+    return () => clearInterval(interval);
+  }, [checkPythonBackendStatus]);
+
+  // Debug function for troubleshooting image generation
+  useEffect(() => {
+    // Make debug functions available globally for troubleshooting
+    (window as any).debugImageGeneration = async () => {
+      console.log('=== Image Generation Debug Info ===');
+      console.log('imageGenEnabled:', imageGenEnabled);
+      console.log('availableImageModels:', availableImageModels);
+      
+      try {
+        if ((window as any).electronAPI) {
+          const status = await (window as any).electronAPI.invoke('service-config:get-enhanced-status');
+          console.log('Service Status:', status);
+          
+          const comfyuiStatus = await (window as any).electronAPI.invoke('comfyui-status');
+          console.log('ComfyUI Status:', comfyuiStatus);
+        } else {
+          console.log('electronAPI not available');
+        }
+      } catch (error) {
+        console.error('Error getting service status:', error);
+      }
+    };
+    
+    (window as any).testImageGenConnection = async () => {
+      console.log('=== Testing Image Generation Connection ===');
+      try {
+        const comfyuiStatus = await (window as any).electronAPI.invoke('comfyui-status');
+        console.log('ComfyUI Status:', comfyuiStatus);
+        
+        if (comfyuiStatus.running) {
+          const { Client } = await import('@stable-canvas/comfyui-client');
+          const url = comfyuiStatus.url || `http://localhost:${comfyuiStatus.port || 8188}`;
+          console.log('Testing connection to:', url);
+          
+          let processedUrl = url;
+          if (url.includes('http://') || url.includes('https://')) {
+            processedUrl = url.split('//')[1];
+          }
+          const ssl_type = url.includes('https') ? true : false;
+          
+          const client = new Client({ api_host: processedUrl, ssl: ssl_type });
+          client.connect();
+          
+          // Test connection
+          const models = await client.getSDModels();
+          console.log('✅ Connection successful! Found', models.length, 'models:', models);
+          client.close();
+        } else {
+          console.log('❌ ComfyUI not running, state:', comfyuiStatus.state);
+        }
+      } catch (error) {
+        console.error('❌ Connection test failed:', error);
+      }
+    };
+    
+    // console.log('🔧 Image generation debug functions available:');
+    // console.log('  - debugImageGeneration() - Show current status');
+    // console.log('  - testImageGenConnection() - Test ComfyUI connection');
+    
+    // Cleanup
+    return () => {
+      delete (window as any).debugImageGeneration;
+      delete (window as any).testImageGenConnection;
+    };
+  }, [imageGenEnabled, availableImageModels]);
+
+  // Handle image generation
+  const handleImageGenerated = useCallback(async (imageDataUrl: string, prompt: string, settings: any) => {
+    try {
+      // Debug logging to understand the image data URL
+      console.log('🎨 handleImageGenerated called with:');
+      console.log('  - imageDataUrl length:', imageDataUrl?.length);
+      console.log('  - imageDataUrl starts with:', imageDataUrl?.substring(0, 50));
+      console.log('  - prompt:', prompt);
+      console.log('  - settings:', settings);
+      
+      // Validate imageDataUrl
+      if (!imageDataUrl || !imageDataUrl.startsWith('data:')) {
+        console.error('❌ Invalid imageDataUrl received:', imageDataUrl);
+        addErrorNotification(
+          'Invalid Image Data',
+          'The generated image data is invalid or corrupted.',
+          5000
+        );
+        return;
+      }
+      
+      // Additional validation for base64 data
+      if (!imageDataUrl.includes('base64,')) {
+        console.error('❌ ImageDataUrl missing base64 data:', imageDataUrl.substring(0, 50) + '...');
+        addErrorNotification(
+          'Invalid Image Format',
+          'The generated image is not in the expected base64 format.',
+          5000
+        );
+        return;
+      }
+      
+      // Test if the image data URL is actually valid by trying to create an image
+      const testImage = new Image();
+      const imageValidationPromise = new Promise<boolean>((resolve) => {
+        testImage.onload = () => {
+          console.log('✅ Image data URL validation successful');
+          resolve(true);
+        };
+        testImage.onerror = () => {
+          console.error('❌ Image data URL validation failed');
+          resolve(false);
+        };
+        testImage.src = imageDataUrl;
+      });
+      
+      const isValidImage = await imageValidationPromise;
+      if (!isValidImage) {
+        console.error('❌ Image data URL failed validation test');
+        addErrorNotification(
+          'Corrupted Image Data',
+          'The generated image data appears to be corrupted and cannot be displayed.',
+          5000
+        );
+        return;
+      }
+      
+      console.log('✅ Image data URL validation passed, proceeding with message creation');
+      
+      // Create attachment for the generated image (for user message)
+      const imageAttachment: ClaraFileAttachment = {
+        id: `img-${Date.now()}`,
+        name: `generated-image-${Date.now()}.png`,
+        type: 'image',
+        size: imageDataUrl.length,
+        mimeType: 'image/png',
+        base64: imageDataUrl.includes(',') ? imageDataUrl.split(',')[1] : imageDataUrl, // Extract base64 part if data URL
+        url: imageDataUrl, // Store the full data URL for display
+        processed: true,
+        processingResult: {
+          success: true,
+          imageAnalysis: {
+            description: prompt,
+            confidence: 1.0
+          }
+        }
+      };
+
+      // Create a user message with the prompt and image attachment
+      const userMessage: ClaraMessage = {
+        id: `user-${Date.now()}`,
+        role: 'user',
+        content: prompt,
+        timestamp: new Date(),
+        attachments: [imageAttachment], // Store image as attachment on user message
+        metadata: {
+          imageGeneration: true
+        }
+      };
+      
+      // Create a separate attachment for the assistant message (for efficient storage)
+      const assistantImageAttachment: ClaraFileAttachment = {
+        id: `img-assistant-${Date.now()}`,
+        name: `generated-image-result-${Date.now()}.png`,
+        type: 'image',
+        size: imageDataUrl.length,
+        mimeType: 'image/png',
+        base64: imageDataUrl.includes(',') ? imageDataUrl.split(',')[1] : imageDataUrl,
+        url: imageDataUrl,
+        processed: true,
+        processingResult: {
+          success: true,
+          imageAnalysis: {
+            description: `Generated image result for: ${prompt}`,
+            confidence: 1.0
+          }
+        }
+      };
+      
+      // Create assistant message with image reference instead of embedding the large data URL
+      const assistantContent = `I've generated an image based on your prompt: "${prompt}". Here's the result:
+
+![Generated Image](${assistantImageAttachment.id})
+
+You can right-click on the image to save it or use it in your projects.`;
+      
+      const imageMessage: ClaraMessage = {
+        id: `assistant-${Date.now()}`,
+        role: 'assistant',
+        content: assistantContent,
+        timestamp: new Date(),
+        attachments: [assistantImageAttachment], // Store image as attachment to avoid large content
+        metadata: {
+          imageGeneration: true,
+          model: 'ComfyUI',
+          settings: settings
+        }
+      };
+      
+      console.log('🎨 Created messages with image attachments on both user and assistant messages');
+      console.log('🎨 User message attachments:', userMessage.attachments?.length);
+      console.log('🎨 Assistant message attachments:', imageMessage.attachments?.length);
+      console.log('🎨 Assistant message content uses attachment ID:', assistantContent.includes(assistantImageAttachment.id));
+      
+      // Directly add messages to the chat without triggering AI processing
+      if (setMessages && currentSession) {
+        console.log('🎨 Adding messages to chat...');
+        
+        // Add both messages in a single state update to prevent race conditions
+        setMessages(prev => [...prev, userMessage, imageMessage]);
+        
+        console.log('🎨 Messages added to chat successfully');
+        
+        // Save messages to database
+        try {
+          await claraDB.addClaraMessage(currentSession.id, userMessage);
+          await claraDB.addClaraMessage(currentSession.id, imageMessage);
+          
+          // Update sessions list for real-time sidebar updates
+          if (setSessions) {
+            setSessions(prev => prev.map(s => 
+              s.id === currentSession.id 
+                ? { 
+                    ...s, 
+                    messageCount: (s.messageCount || s.messages?.length || 0) + 2, // +2 for both messages
+                    updatedAt: new Date()
+                  }
+                : s
+            ));
+          }
+          
+          console.log('🎨 Messages saved to database successfully');
+        } catch (error) {
+          console.error('Failed to save generated image messages:', error);
+        }
+      } else {
+        console.error('❌ Cannot add messages - setMessages or currentSession is missing');
+        console.log('  - setMessages:', !!setMessages);
+        console.log('  - currentSession:', !!currentSession);
+      }
+      
+      // Show success notification
+      addInfoNotification(
+        'Image Generated',
+        'Your image has been generated and added to the chat.',
+        3000
+      );
+      
+    } catch (error) {
+      console.error('Error handling generated image:', error);
+      addErrorNotification(
+        'Image Generation Error',
+        'Failed to add the generated image to the chat.',
+        5000
+      );
+    }
+  }, [setMessages, currentSession, setSessions]);
+
+  // Handle image generation button click
+  const handleImageGenClick = useCallback(() => {
+    console.log('🎨 Image generation button clicked');
+    console.log('🎨 imageGenEnabled:', imageGenEnabled);
+    console.log('🎨 availableImageModels:', availableImageModels);
+    
+    if (!imageGenEnabled) {
+      console.log('⚠️ Image generation disabled - showing notification');
+      addInfoNotification(
+        'Image Generation Unavailable',
+        availableImageModels.length === 0 
+          ? 'ComfyUI is not running or no image models are available. Please check your ComfyUI setup in Settings.'
+          : 'ComfyUI service is not ready. Please wait for it to start or check Settings.',
+        6000
+      );
+      return;
+    }
+    
+    console.log('✅ Opening image generation widget');
+    setShowImageGenWidget(true);
+  }, [imageGenEnabled, availableImageModels]);
+
+  // Cleanup screen sharing on component unmount
+  useEffect(() => {
+    return () => {
+      if (screenStream) {
+        screenStream.getTracks().forEach(track => track.stop());
+        if (screenVideoRef.current) {
+          screenVideoRef.current.srcObject = null;
+          if (screenVideoRef.current.parentNode) {
+            screenVideoRef.current.parentNode.removeChild(screenVideoRef.current);
+          }
+        }
+      }
+    };
+  }, [screenStream]);
+
+  // Browser detection for better error messages
+  const getBrowserInfo = () => {
+    const userAgent = navigator.userAgent;
+    const isChrome = /Chrome/.test(userAgent) && /Google Inc/.test(navigator.vendor);
+    const isFirefox = /Firefox/.test(userAgent);
+    const isEdge = /Edg/.test(userAgent);
+    const isSafari = /Safari/.test(userAgent) && !/Chrome/.test(userAgent);
+    const isOpera = /OPR/.test(userAgent);
+    
+    return { isChrome, isFirefox, isEdge, isSafari, isOpera };
+  };
+
+  // Handle screen source selection from picker
+  const handleScreenSourceSelect = useCallback(async (selectedSource: { id: string; name: string; thumbnail: string }) => {
+    try {
+      setShowScreenPicker(false);
+
+      // Stop existing stream if any
+      if (screenStream) {
+        console.log('🛑 Stopping existing screen stream before switching sources');
+        screenStream.getTracks().forEach(track => track.stop());
+        setScreenStream(null);
+        if (screenVideoRef.current) {
+          screenVideoRef.current.srcObject = null;
+        }
+      }
+
+      // Use Electron's desktopCapturer with the selected source
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          mandatory: {
+            chromeMediaSource: 'desktop',
+            chromeMediaSourceId: selectedSource.id,
+            maxWidth: 3840, // Support 4K resolution
+            maxHeight: 2160,
+            minWidth: 1280, // Minimum quality threshold
+            minHeight: 720,
+            maxFrameRate: 60 // Higher frame rate for smoother capture
+          }
+        } as any
+      });
+
+      // Set up video element
+      if (!screenVideoRef.current) {
+        screenVideoRef.current = document.createElement('video');
+        screenVideoRef.current.style.display = 'none';
+        screenVideoRef.current.style.position = 'absolute';
+        screenVideoRef.current.style.top = '-9999px';
+        screenVideoRef.current.muted = true;
+        screenVideoRef.current.playsInline = true;
+        document.body.appendChild(screenVideoRef.current);
+      }
+
+      screenVideoRef.current.srcObject = stream;
+      
+      // Wait for video to load before playing
+      await new Promise((resolve, reject) => {
+        if (screenVideoRef.current) {
+          screenVideoRef.current.onloadedmetadata = () => resolve(void 0);
+          screenVideoRef.current.onerror = reject;
+          screenVideoRef.current.play().catch(reject);
+        }
+      });
+
+      setScreenStream(stream);
+      setIsScreenSharing(true);
+      setCurrentScreenSource(selectedSource); // Store the current screen source
+
+      // Listen for stream end
+      stream.getVideoTracks()[0].addEventListener('ended', () => {
+        setIsScreenSharing(false);
+        setScreenStream(null);
+        setCurrentScreenSource(null);
+        if (screenVideoRef.current) {
+          screenVideoRef.current.srcObject = null;
+        }
+        addInfoNotification(
+          'Screen Sharing Ended',
+          'Screen sharing was stopped.',
+          3000
+        );
+      });
+
+      addInfoNotification(
+        'Screen Sharing Active',
+        `Clara will now capture "${selectedSource.name}" with each message you send.`,
+        5000
+      );
+
+    } catch (error: any) {
+      console.error('Failed to start screen sharing with selected source:', error);
+      
+      // Reset state if stream creation failed
+      setIsScreenSharing(false);
+      setScreenStream(null);
+      setCurrentScreenSource(null);
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = null;
+      }
+      
+      addErrorNotification(
+        'Screen Sharing Failed',
+        `Failed to start screen sharing: ${error?.message || 'Unknown error'}`,
+        5000
+      );
+    }
+  }, [screenStream, addInfoNotification, addErrorNotification]);
+
+  // Check if Clara's Pocket is currently starting
+  const isServiceStarting = offlineProvider?.type === 'claras-pocket' && 
+    providerOfflineMessage.includes('starting');
+
+  return (
+    <div 
+      ref={containerRef}
+      className="relative dark:border-gray-800 bg-transparent transition-colors duration-100 z-10"
+    >
+      {/* Drag overlay */}
+      {dragCounter > 0 && (
+        <div className="absolute inset-0 bg-sakura-500/10 border-2 border-dashed border-sakura-500 rounded-xl z-30 pointer-events-none" />
+      )}
+
+      <div className="max-w-4xl mx-auto">
+        <div className="p-6 flex justify-center">
+          <div className="max-w-3xl w-full relative">
+            {/* Main Input Container - Conditionally render chat input OR voice chat */}
+            {showVoiceChat ? (
+              /* Voice Chat Mode - Same size as input container */
+              <ClaraVoiceChat
+                isEnabled={isVoiceChatEnabled}
+                onToggle={handleVoiceToggle}
+                onSendAudio={handleVoiceAudio}
+                isProcessing={isVoiceProcessing}
+                isAIResponding={isLoading}
+                autoTTSText={autoTTSText}
+                autoTTSTrigger={autoTTSTrigger}
+                onBackToChat={() => {
+                  setShowVoiceChat(false);
+                  setIsVoiceChatEnabled(false);
+                  focusTextarea();
+                }}
+              />
+            ) : (
+              /* Chat Input Mode */
+              <div 
+                ref={inputContainerRef}
+                className="glassmorphic rounded-xl p-4 bg-white/60 dark:bg-gray-900/40 backdrop-blur-md shadow-lg transition-all duration-300"
+              >
+                
+                {/* Simple Progress Indicator - Show when loading */}
+                {isLoading && (
+                  <div className="flex items-center gap-3 mb-3 p-2 bg-blue-50/80 dark:bg-blue-900/30 rounded-lg border border-blue-200/50 dark:border-blue-700/50">
+                    <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
+                      {progressState.progress > 0 ? (
+                        <div className="relative w-4 h-4">
+                          <div className="w-4 h-4 rounded-full border-2 border-blue-500 border-t-transparent animate-spin"></div>
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <div className="w-1 h-1 bg-blue-500 rounded-full"></div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="w-4 h-4 animate-pulse rounded-full bg-blue-400" />
+                      )}
+                      
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-sm">
+                            {progressState.isActive && progressState.message ? progressState.message : 'Processing...'}
+                          </span>
+                          {progressState.progress > 0 && (
+                            <span className="text-blue-500 font-mono text-xs bg-blue-100 dark:bg-blue-800/50 px-2 py-0.5 rounded">
+                              {progressState.progress}%
+                            </span>
+                          )}
+                        </div>
+                        
+                        {progressState.details && (
+                          <div className="text-xs text-blue-500/80 dark:text-blue-400/80 mt-0.5">
+                            {progressState.details}
+                          </div>
+                        )}
+                        
+                        {/* Progress bar for determinate progress */}
+                        {progressState.progress > 0 && (
+                          <div className="w-full bg-blue-200/50 dark:bg-blue-800/30 rounded-full h-1.5 mt-2">
+                            <div 
+                              className="bg-blue-500 h-1.5 rounded-full transition-all duration-300 ease-out"
+                              style={{ width: `${progressState.progress}%` }}
+                            ></div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {/* File Upload Area */}
+                <FileUploadArea
+                  files={files}
+                  onFilesAdded={handleFilesAdded}
+                  onFileRemoved={handleFileRemoved}
+                  isProcessing={isLoading}
+                />
+
+                {/* Notebook Mode Indicator with Dropdown */}
+                {isNotebookMode && selectedNotebook && (
+                  <div className="mt-3 mb-2 px-3 py-2 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 border border-blue-200 dark:border-blue-700/30 rounded-lg">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 flex-1">
+                        <div className="p-1 bg-blue-500 rounded">
+                          <BookOpen className="w-3 h-3 text-white" />
+                        </div>
+                        
+                        {/* Notebook Selection Dropdown */}
+                        <div className="relative flex-1 max-w-xs" data-notebook-dropdown>
+                          <button
+                            onClick={() => {
+                              if (availableNotebooks.length === 0) {
+                                loadAvailableNotebooks().then(notebooks => {
+                                  setAvailableNotebooks(notebooks);
+                                  setShowNotebookDropdown(!showNotebookDropdown);
+                                });
+                              } else {
+                                setShowNotebookDropdown(!showNotebookDropdown);
+                              }
+                            }}
+                            className="flex items-center gap-2 px-2 py-1 text-xs font-medium text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-800/30 rounded transition-colors max-w-[200px] w-full"
+                          >
+                            <span className="truncate min-w-0 flex-1">
+                              Notebook: <span className="font-semibold">{selectedNotebook.name}</span>
+                            </span>
+                            <ChevronDown className="w-3 h-3 flex-shrink-0" />
+                          </button>
+                          
+                          {/* Dropdown Menu */}
+                          {showNotebookDropdown && (
+                            <div 
+                              ref={notebookDropdownRef}
+                              className="absolute bottom-full left-0 right-0 mb-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 max-h-[200px] overflow-y-auto"
+                            >
+                              {isLoadingNotebooks ? (
+                                <div className="flex items-center justify-center py-3">
+                                  <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                                  <span className="ml-2 text-xs text-gray-600 dark:text-gray-400">Loading...</span>
+                                </div>
+                              ) : availableNotebooks.length === 0 ? (
+                                <div className="p-3 text-xs text-gray-500 dark:text-gray-400 text-center">
+                                  No other notebooks available
+                                </div>
+                              ) : (
+                                availableNotebooks.map((notebook) => (
+                                  <button
+                                    key={notebook.id}
+                                    onClick={() => {
+                                      setSelectedNotebook(notebook);
+                                      setShowNotebookDropdown(false);
+                                      addInfoNotification(
+                                        'Notebook Switched',
+                                        `Now using "${notebook.name}" notebook context.`,
+                                        3000
+                                      );
+                                    }}
+                                    className={`w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${
+                                      selectedNotebook.id === notebook.id 
+                                        ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300' 
+                                        : 'text-gray-700 dark:text-gray-300'
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <span className="truncate font-medium">{notebook.name}</span>
+                                      {selectedNotebook.id === notebook.id && (
+                                        <CheckCircle className="w-3 h-3 text-blue-600 flex-shrink-0" />
+                                      )}
+                                    </div>
+                                    {notebook.description && (
+                                      <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate">
+                                        {notebook.description}
+                                      </div>
+                                    )}
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        {/* Querying Indicator */}
+                        {isQueryingNotebook && (
+                          <div className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400">
+                            <div className="w-3 h-3 animate-spin rounded-full border border-blue-500 border-t-transparent"></div>
+                            <span>Reading...</span>
+                          </div>
+                        )}
+                        
+                        {/* Turn Off Notebook Mode Button */}
+                        <button
+                          onClick={() => {
+                            setIsNotebookMode(false);
+                            setSelectedNotebook(null);
+                            setShowNotebookDropdown(false);
+                            addInfoNotification(
+                              'Notebook Mode Disabled',
+                              'Clara will no longer use notebook context.',
+                              3000
+                            );
+                          }}
+                          className="p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-colors group"
+                          title="Turn off Notebook Mode"
+                        >
+                          <X className="w-3 h-3 text-gray-500 group-hover:text-red-600 dark:group-hover:text-red-400" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Screen Sharing Mode Indicator with Dropdown */}
+                {isScreenSharing && currentScreenSource && (
+                  <div className="mt-3 mb-2 px-3 py-2 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 border border-green-200 dark:border-green-700/30 rounded-lg">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 flex-1">
+                        <div className="p-1 bg-green-500 rounded">
+                          <Monitor className="w-3 h-3 text-white" />
+                        </div>
+                        
+                        {/* Screen Source Selection Dropdown */}
+                        <div className="relative flex-1 max-w-xs" data-screen-dropdown>
+                          <button
+                            onClick={() => {
+                              if (availableSources.length === 0) {
+                                // Load available sources if not already loaded
+                                const loadSources = async () => {
+                                  const isElectron = typeof window !== 'undefined' && window.electronScreenShare;
+                                  if (isElectron) {
+                                    try {
+                                      const sources = await window.electronScreenShare?.getDesktopSources();
+                                      if (sources) {
+                                        setAvailableSources(sources);
+                                        setShowScreenDropdown(!showScreenDropdown);
+                                      }
+                                    } catch (error) {
+                                      console.error('Failed to load screen sources:', error);
+                                    }
+                                  }
+                                };
+                                loadSources();
+                              } else {
+                                setShowScreenDropdown(!showScreenDropdown);
+                              }
+                            }}
+                            className="flex items-center gap-2 px-2 py-1 text-xs font-medium text-green-700 dark:text-green-300 hover:bg-green-100 dark:hover:bg-green-800/30 rounded transition-colors max-w-[200px] w-full"
+                          >
+                            <span className="truncate min-w-0 flex-1">
+                              Screen: <span className="font-semibold">{currentScreenSource.name}</span>
+                            </span>
+                            <ChevronDown className="w-3 h-3 flex-shrink-0" />
+                          </button>
+                          
+                          {/* Dropdown Menu */}
+                          {showScreenDropdown && (
+                            <div 
+                              ref={screenDropdownRef}
+                              className="absolute bottom-full left-0 right-0 mb-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 max-h-[200px] overflow-y-auto"
+                            >
+                              {availableSources.length === 0 ? (
+                                <div className="flex items-center justify-center py-3">
+                                  <Loader2 className="w-4 h-4 animate-spin text-green-600" />
+                                  <span className="ml-2 text-xs text-gray-600 dark:text-gray-400">Loading...</span>
+                                </div>
+                              ) : (
+                                availableSources.map((source) => (
+                                  <button
+                                    key={source.id}
+                                    onClick={async () => {
+                                      setShowScreenDropdown(false);
+                                      
+                                      // Add small delay to ensure dropdown closes first
+                                      setTimeout(async () => {
+                                        try {
+                                          await handleScreenSourceSelect(source);
+                                          addInfoNotification(
+                                            'Screen Source Switched',
+                                            `Now sharing "${source.name}".`,
+                                            3000
+                                          );
+                                        } catch (error) {
+                                          console.error('Failed to switch screen source:', error);
+                                        }
+                                      }, 100);
+                                    }}
+                                    className={`w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors ${
+                                      currentScreenSource.id === source.id 
+                                        ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300' 
+                                        : 'text-gray-700 dark:text-gray-300'
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <span className="truncate font-medium">{source.name}</span>
+                                      {currentScreenSource.id === source.id && (
+                                        <CheckCircle className="w-3 h-3 text-green-600 flex-shrink-0" />
+                                      )}
+                                    </div>
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        {/* Turn Off Screen Sharing Button */}
+                        <button
+                          onClick={() => {
+                            if (screenStream) {
+                              screenStream.getTracks().forEach(track => track.stop());
+                            }
+                            setIsScreenSharing(false);
+                            setScreenStream(null);
+                            setCurrentScreenSource(null);
+                            setShowScreenDropdown(false);
+                            if (screenVideoRef.current) {
+                              screenVideoRef.current.srcObject = null;
+                            }
+                            addInfoNotification(
+                              'Screen Sharing Disabled',
+                              'Screen sharing has been turned off.',
+                              3000
+                            );
+                          }}
+                          className="p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded transition-colors group"
+                          title="Turn off Screen Sharing"
+                        >
+                          <X className="w-3 h-3 text-gray-500 group-hover:text-red-600 dark:group-hover:text-red-400" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Input Field */}
+                <div className={files.length > 0 ? 'mt-3' : ''}>
+                  {/* Removed preloading indicator - preloading is now completely silent */}
+                  
+                  <textarea
+                    ref={textareaRef}
+                    value={input}
+                    onChange={(e) => handleInputChange(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    onPaste={handlePaste}
+                    onFocus={() => {
+                      // Trigger aggressive preload on focus for fastest TTFT - SILENT
+                      console.log('⚡ Input focused - triggering silent immediate preload');
+                      onPreloadModel?.();
+                      
+                      // Close autonomous agent status panel when user focuses input
+                      if (autonomousAgentStatus?.isActive) {
+                        console.log('🏁 Input focused - closing autonomous agent status panel');
+                        autonomousAgentStatus.completeAgent('Input focused - closing status panel', 0);
+                      }
+                    }}
+                    onInput={() => {
+                      // Trigger preload on very first keystroke - SILENT
+                      if (input.length === 0) {
+                        console.log('🚀 First keystroke detected - silent aggressive preload');
+                        onPreloadModel?.();
+                      }
+                    }}
+                    placeholder="Ask me anything..."
+                    className="w-full border-0 outline-none focus:outline-none focus:ring-0 resize-none bg-transparent text-gray-700 dark:text-gray-300 placeholder-gray-400 dark:placeholder-gray-500"
+                    style={{
+                      height: 'auto',
+                      minHeight: '24px',
+                      maxHeight: '250px',
+                      overflowY: 'auto',
+                      padding: '0',
+                      borderRadius: '0'
+                    }}
+                    data-chat-input="true"
+                    disabled={isLoading}
+                  />
+                </div>
+
+                {/* Bottom Actions - Redesigned for better UX */}
+                <div className="flex flex-wrap justify-between items-center mt-4 gap-2">
+                  {/* Left Side - Mode & Model Selection */}
+                  <div className="flex items-center gap-2 min-w-0 flex-1">
+                    {/* Enhanced Mode Toggle with Clear Labels */}
+                    <div className="flex items-center bg-gray-100/50 dark:bg-gray-800/30 rounded-lg p-1">
+                      <Tooltip 
+                        content={isStreamingMode ? "Chat Mode: Quick conversations with streaming responses" : "Agent Mode: AI tools, file analysis, and automation"} 
+                        position="top"
+                      >
+                        <button
+                          onClick={handleModeToggle}
+                          className={`flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all duration-200 w-[100px] overflow-hidden ${
+                            isStreamingMode 
+                              ? 'bg-sakura-500 hover:bg-sakura-600 text-white shadow-sm' 
+                              : 'bg-purple-500 hover:bg-purple-600 text-white shadow-sm'
+                          }`}
+                          disabled={isLoading}
+                        >
+                          {isStreamingMode ? (
+                            <>
+                              <MessageCircle className="w-3 h-3 flex-shrink-0" />
+                              <span className="truncate">Chat</span>
+                            </>
+                          ) : (
+                            <>
+                              <Bot className="w-3 h-3 flex-shrink-0" />
+                              <span className="truncate">Agent</span>
+                            </>
+                          )}
+                        </button>
+                      </Tooltip>
+                    </div>
+
+                    {/* Model Selection */}
+                    <div className="relative">
+                      {currentAIConfig.features.autoModelSelection ? (
+                        <Tooltip 
+                          content={(() => {
+                            const autoSelected = getAutoSelectedModel();
+                            if (autoSelected?.model) {
+                              return `Auto Mode: ${autoSelected.model.name} (${autoSelected.reason})`;
+                            }
+                            return "Automatic model selection enabled";
+                          })()} 
+                          position="top"
+                        >
+                          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs bg-white/70 dark:bg-gray-800/70 border border-blue-200 dark:border-blue-700 min-w-[140px]">
+                            {(() => {
+                              const autoSelected = getAutoSelectedModel();
+                              const getModelIcon = () => {
+                                if (autoSelected?.type === 'vision') return ImageIcon;
+                                if (autoSelected?.type === 'code') return Zap;
+                                return Bot;
+                              };
+                              const getModelColor = () => {
+                                if (autoSelected?.type === 'vision') return 'text-purple-600 dark:text-purple-400';
+                                if (autoSelected?.type === 'code') return 'text-blue-600 dark:text-blue-400';
+                                return 'text-blue-600 dark:text-blue-400';
+                              };
+                              
+                              const IconComponent = getModelIcon();
+                              const modelName = autoSelected?.model?.name || 'Auto Mode';
+                              const truncatedName = modelName.length > 15 ? modelName.substring(0, 12) + '...' : modelName;
+                              
+                              return (
+                                <>
+                                  <IconComponent className={`w-3 h-3 flex-shrink-0 ${getModelColor()}`} />
+                                  <span className="text-gray-700 dark:text-gray-300 truncate text-xs font-medium" title={modelName}>
+                                    {truncatedName}
+                                  </span>
+                                  <Zap className="w-3 h-3 flex-shrink-0 text-blue-500" />
+                                </>
+                              );
+                            })()}
+                          </div>
+                        </Tooltip>
+                      ) : (
+                        <ModelSelector
+                          models={models}
+                          selectedModel={currentAIConfig.models.text || ''}
+                          onModelChange={(modelId) => {
+                            handleAIConfigChange({
+                              models: { ...currentAIConfig.models, text: modelId }
+                            });
+                            onModelChange?.(modelId, 'text');
+                          }}
+                          modelType="text"
+                          currentProvider={currentAIConfig.provider}
+                        />
+                      )}
+                    </div>
+
+                    {/* Compact Provider Selector */}
+                    {providers.length > 1 && (
+                      <CompactProviderSelector
+                        providers={providers}
+                        selectedProvider={currentAIConfig.provider}
+                        onProviderChange={(providerId) => {
+                          handleAIConfigChange({ provider: providerId });
+                          onProviderChange?.(providerId);
+                        }}
+                        isLoading={isLoading}
+                      />
+                    )}
+                  </div>
+
+                  {/* Right Side - MCP, File Actions, Voice, Settings & Send */}
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {/* MCP Server Selector */}
+                    <div className="relative" data-mcp-selector>
+                      <Tooltip content={
+                        isStreamingMode 
+                          ? "MCP available with Agent mode only" 
+                          : (() => {
+                              const enabledCount = currentAIConfig.mcp?.enabledServers?.length ?? 0;
+                              const activeCount = mcpServers.filter(server => 
+                                server.isRunning && (currentAIConfig.mcp?.enabledServers?.includes(server.name) ?? false)
+                              ).length;
+                              return enabledCount > 0 
+                                ? `MCP Servers (${enabledCount} enabled, ${activeCount} active)`
+                                : "Click to configure MCP servers";
+                            })()
+                      } position="top">
+                        <button
+                          onClick={handleMcpSelectorToggle}
+                          className={`relative p-2 rounded-lg transition-colors ${
+                            isStreamingMode
+                              ? 'text-gray-400 dark:text-gray-600 cursor-not-allowed'
+                              : (() => {
+                                  // Check if MCP is enabled and has any servers configured
+                                  const mcpEnabled = currentAIConfig.features.enableMCP && !isStreamingMode;
+                                  const hasEnabledServers = (currentAIConfig.mcp?.enabledServers?.length ?? 0) > 0;
+                                  
+                                  // Show as active if MCP is enabled with servers, even if not all are running yet
+                                  return (mcpEnabled && hasEnabledServers)
+                                    ? 'hover:bg-gray-100 dark:hover:bg-gray-800 text-blue-600 dark:text-blue-400'
+                                    : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-400';
+                                })()
+                          }`}
+                          disabled={isLoading || isStreamingMode}
+                        >
+                          {/* MCP Icon */}
+                          <svg 
+                            fill="currentColor" 
+                            fillRule="evenodd" 
+                            height="16" 
+                            style={{flexShrink: 0, lineHeight: 1}} 
+                            viewBox="0 0 24 24" 
+                            width="16" 
+                            xmlns="http://www.w3.org/2000/svg"
+                            className="w-4 h-4"
+                          >
+                            <path d="M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z"></path>
+                            <path d="M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z"></path>
+                          </svg>
+                          
+                          {/* Server count badge */}
+                          {!isStreamingMode && (() => {
+                            const enabledCount = currentAIConfig.mcp?.enabledServers?.length ?? 0;
+                            return enabledCount > 0;
+                          })() && (
+                            <span className="absolute -top-1 -right-1 bg-blue-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-medium">
+                              {(() => {
+                                const enabledCount = currentAIConfig.mcp?.enabledServers?.length ?? 0;
+                                return enabledCount > 9 ? '9+' : enabledCount;
+                              })()}
+                            </span>
+                          )}
+                        </button>
+                      </Tooltip>
+                      
+                      {/* MCP Dropdown */}
+                      {showMcpSelector && !isStreamingMode && (
+                        <div className="absolute bottom-full right-0 mb-2 w-80 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 max-h-96 flex flex-col">
+                          <div className="p-3 border-b border-gray-200 dark:border-gray-700">
+                            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">MCP Servers</h3>
+                            {mcpServers.length > 6 && (
+                              <input
+                                type="text"
+                                placeholder="Search servers..."
+                                value={mcpSearchTerm}
+                                onChange={(e) => setMcpSearchTerm(e.target.value)}
+                                className="w-full px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              />
+                            )}
+                          </div>
+                          
+                          <div className="flex-1 overflow-y-auto p-2 max-h-64">
+                            {filteredMcpServers.map((server) => (
+                              <div
+                                key={server.name}
+                                className="flex items-center justify-between p-2 rounded-md hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+                              >
+                                <div className="flex items-center gap-2 flex-1">
+                                  <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                                    togglingServers.has(server.name) ? 'bg-blue-400 animate-pulse' :
+                                    server.isRunning && (currentAIConfig.mcp?.enabledServers?.includes(server.name) ?? false) ? 'bg-green-500' : 
+                                    server.isRunning && !(currentAIConfig.mcp?.enabledServers?.includes(server.name) ?? false) ? 'bg-yellow-500' :
+                                    server.status === 'error' ? 'bg-red-500' : 'bg-gray-400'
+                                  }`} />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                                      {server.name}
+                                      {togglingServers.has(server.name) && (
+                                        <Loader2 className="inline w-3 h-3 ml-1 animate-spin text-blue-500" />
+                                      )}
+                                    </div>
+                                    <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                                      {server.config?.type || 'unknown'} • {
+                                        togglingServers.has(server.name) ? 'updating...' :
+                                        server.isRunning && (currentAIConfig.mcp?.enabledServers?.includes(server.name) ?? false) ? 'active' :
+                                        server.isRunning && !(currentAIConfig.mcp?.enabledServers?.includes(server.name) ?? false) ? 'running (not enabled)' :
+                                        !server.isRunning && (currentAIConfig.mcp?.enabledServers?.includes(server.name) ?? false) ? 'enabled (not running)' :
+                                        'stopped'
+                                      }
+                                    </div>
+                                  </div>
+                                </div>
+                                
+                                <button
+                                  onClick={() => {
+                                    // Check if server is both running AND enabled in config
+                                    const isEnabled = currentAIConfig.mcp?.enabledServers?.includes(server.name) ?? false;
+                                    const isActive = server.isRunning && isEnabled;
+                                    handleMcpServerToggle(server.name, !isActive);
+                                  }}
+                                  disabled={togglingServers.has(server.name)}
+                                  className={`flex-shrink-0 w-10 h-5 rounded-full transition-colors relative ${
+                                    togglingServers.has(server.name) ? 'bg-blue-400' :
+                                    (server.isRunning && (currentAIConfig.mcp?.enabledServers?.includes(server.name) ?? false))
+                                      ? 'bg-green-500' 
+                                      : 'bg-gray-300 dark:bg-gray-600'
+                                  } hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-60`}
+                                  title={
+                                    togglingServers.has(server.name) ? 
+                                      'Updating server...' :
+                                    (server.isRunning && (currentAIConfig.mcp?.enabledServers?.includes(server.name) ?? false)) ? 
+                                      'Click to disable server' : 'Click to enable server'
+                                  }
+                                >
+                                  {togglingServers.has(server.name) ? (
+                                    <div className="absolute inset-0 flex items-center justify-center">
+                                      <Loader2 className="w-3 h-3 animate-spin text-white" />
+                                    </div>
+                                  ) : (
+                                    <div className={`w-4 h-4 rounded-full bg-white transition-transform ${
+                                      (server.isRunning && (currentAIConfig.mcp?.enabledServers?.includes(server.name) ?? false)) ? 'translate-x-5' : 'translate-x-0.5'
+                                    }`} />
+                                  )}
+                                </button>
+                              </div>
+                            ))}
+                            
+                            {filteredMcpServers.length === 0 && (
+                              <div className="text-center py-4 text-gray-500 dark:text-gray-400 text-sm">
+                                {mcpSearchTerm ? 'No servers match your search' : 'No MCP servers available'}
+                              </div>
+                            )}
+                          </div>
+                          
+                          <div className="p-3 border-t border-gray-200 dark:border-gray-700">
+                            <button
+                              onClick={() => {
+                                setShowMcpSelector(false);
+                                onAdvancedOptionsToggle?.(true);
+                              }}
+                              className="w-full text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                            >
+                              Open Advanced MCP Settings
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* File Upload and Image Generation Group */}
+                    <div className="flex items-center bg-gray-100/50 dark:bg-gray-800/30 rounded-lg p-1 mr-2">
+                      <Tooltip content="Upload images, documents & files" position="top">
+                        <button 
+                          onClick={triggerFileUpload}
+                          className="p-1.5 rounded-md hover:bg-white dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 transition-colors"
+                          disabled={isLoading}
+                        >
+                          <Paperclip className="w-4 h-4" />
+                        </button>
+                      </Tooltip>
+                      
+                      <Tooltip content={imageGenEnabled ? "Generate image" : "Image generation unavailable - ComfyUI not running"} position="top">
+                        <button
+                          onClick={handleImageGenClick}
+                          className={`p-1.5 rounded-md transition-colors ${
+                            imageGenEnabled 
+                              ? 'hover:bg-white dark:hover:bg-gray-700 text-purple-600 dark:text-purple-400' 
+                              : 'text-gray-400 dark:text-gray-600 cursor-not-allowed'
+                          }`}
+                          disabled={isLoading || !imageGenEnabled}
+                        >
+                          <Palette className="w-4 h-4" />
+                        </button>
+                      </Tooltip>
+                    </div>
+
+                    {/* Quick Voice Recording */}
+                    <div className="relative">
+                      {pythonBackendStatus.isHealthy ? (
+                        <Tooltip content={
+                          isQuickRecording 
+                            ? "Stop recording (or wait for auto-stop)" 
+                            : isVoiceProcessing 
+                              ? "Processing recording..." 
+                              : "Quick voice recording - transcribe to text"
+                        } position="top">
+                          <button
+                            onClick={handleQuickRecording}
+                            className={`relative p-2 rounded-lg transition-colors ${
+                              isQuickRecording 
+                                ? 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400' 
+                                : isVoiceProcessing
+                                  ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                                  : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-400'
+                            }`}
+                            disabled={isLoading || isVoiceProcessing}
+                          >
+                            {isVoiceProcessing ? (
+                              <div className="w-4 h-4 animate-spin rounded-full border-2 border-blue-600 border-t-transparent" />
+                            ) : (
+                              <Mic className={`w-4 h-4 ${isQuickRecording ? 'animate-pulse' : ''}`} />
+                            )}
+                            {/* Recording progress indicator */}
+                            {isQuickRecording && quickRecordingProgress > 0 && (
+                              <div className="absolute inset-0 rounded-lg overflow-hidden">
+                                <div 
+                                  className="absolute bottom-0 left-0 h-1 bg-red-500 transition-all duration-100"
+                                  style={{ width: `${quickRecordingProgress}%` }}
+                                />
+                              </div>
+                            )}
+                          </button>
+                        </Tooltip>
+                      ) : (
+                        <Tooltip content={
+                          pythonBackendStatus.error 
+                            ? `Voice unavailable: ${pythonBackendStatus.error}. Click to start Python backend.`
+                            : "Voice requires Python backend. Click to start."
+                        } position="top">
+                          <button
+                            onClick={handleStartPythonBackend}
+                            className="p-2 rounded-lg transition-colors hover:bg-orange-100 dark:hover:bg-orange-900/30 text-orange-600 dark:text-orange-400 border border-orange-300 dark:border-orange-700"
+                            disabled={isLoading || isPythonStarting}
+                          >
+                            {isPythonStarting ? (
+                              <div className="w-4 h-4 animate-spin rounded-full border-2 border-orange-600 border-t-transparent" />
+                            ) : (
+                              <Mic className="w-4 h-4" />
+                            )}
+                          </button>
+                        </Tooltip>
+                      )}
+                    </div>
+
+                    {/* More Options - Overflow Menu */}
+                    <div className="relative">
+                      <Tooltip content="More options" position="top">
+                        <button
+                          ref={overflowMenuTriggerRef}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowOverflowMenu(!showOverflowMenu);
+                          }}
+                          className={`p-2 rounded-lg transition-colors ${
+                            showOverflowMenu
+                              ? 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300' 
+                              : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-400'
+                          }`}
+                        >
+                          <MoreHorizontal className="w-4 h-4" />
+                        </button>
+                      </Tooltip>
+                      
+                      <OverflowMenu
+                        show={showOverflowMenu}
+                        onClose={() => setShowOverflowMenu(false)}
+                        onScreenShare={handleScreenShare}
+                        onVoiceModeToggle={() => {
+                          setShowVoiceChat(!showVoiceChat);
+                          // Also enable voice chat when opening
+                          if (!showVoiceChat) {
+                            setIsVoiceChatEnabled(true);
+                          }
+                        }}
+                        onAdvancedOptionsToggle={() => onAdvancedOptionsToggle?.(!showAdvancedOptionsPanel)}
+                        isScreenSharing={isScreenSharing}
+                        showVoiceChat={showVoiceChat}
+                        showAdvancedOptionsPanel={showAdvancedOptionsPanel}
+                        triggerRef={overflowMenuTriggerRef}
+                        pythonBackendStatus={pythonBackendStatus}
+                        isPythonStarting={isPythonStarting}
+                        onStartPythonBackend={handleStartPythonBackend}
+                        isNotebookMode={isNotebookMode}
+                        selectedNotebook={selectedNotebook}
+                        onNotebookModeToggle={handleNotebookModeToggle}
+                      />
+                    </div>
+
+                    {/* Send/Stop Button */}
+                    {isLoading ? (
+                      <Tooltip content="Stop generating" position="top">
+                        <button
+                          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors font-medium text-sm"
+                          onClick={onStop}
+                          disabled={!onStop}
+                        >
+                          <Square className="w-4 h-4" fill="white" />
+                          <span>Stop</span>
+                        </button>
+                      </Tooltip>
+                    ) : (
+                      <Tooltip content="Send message (Enter)" position="top">
+                        <button
+                          onClick={handleSend}
+                          disabled={!input.trim() && files.length === 0 || isQueryingNotebook}
+                          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-sakura-500 text-white hover:bg-sakura-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium text-sm"
+                        >
+                          {isQueryingNotebook ? (
+                            <>
+                              <div className="w-4 h-4 animate-spin rounded-full border-2 border-white border-t-transparent"></div>
+                              <span>Querying Notebook...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Send className="w-4 h-4" />
+                              <span>Send</span>
+                            </>
+                          )}
+                        </button>
+                      </Tooltip>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Advanced Options - Removed, now handled by parent component */}
+          </div>
+        </div>
+      </div>
+
+      {/* Provider Offline Modal */}
+      {showProviderOfflineModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-6 m-4 max-w-md w-full mx-auto">
+            {/* Icon */}
+            <div className="flex justify-center mb-4">
+              <div className={`w-12 h-12 rounded-full flex items-center justify-center ${
+                isServiceStarting 
+                  ? 'bg-blue-100 dark:bg-blue-900' 
+                  : 'bg-red-100 dark:bg-red-900'
+              }`}>
+                {isServiceStarting ? (
+                  <div className="w-6 h-6 text-blue-600 dark:text-blue-400">
+                    <svg className="animate-spin w-full h-full" fill="none" viewBox="0 0 24 24">
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      ></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                  </div>
+                ) : (
+                  <AlertCircle className="w-6 h-6 text-red-600 dark:text-red-400" />
+                )}
+              </div>
+            </div>
+
+            {/* Title */}
+            <h2 className="text-xl font-bold text-gray-900 dark:text-white text-center mb-3">
+              {isServiceStarting ? 'Starting Clara\'s Pocket' : 'Provider Not Responding (Probably Restarting)'}
+            </h2>
+
+            {/* Message */}
+            <p className="text-gray-600 dark:text-gray-300 text-center mb-6 leading-relaxed">
+              {providerOfflineMessage}
+            </p>
+
+            {/* Action Buttons */}
+            <div className="flex flex-col space-y-3">
+              {offlineProvider?.type === 'claras-pocket' && !isServiceStarting ? (
+                // If current provider is Clara Core and NOT starting, offer to start it
+                <button
+                  onClick={handleStartClaraCore}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 flex items-center justify-center space-x-2"
+                >
+                  <Server className="w-5 h-5" />
+                  <span>Start Clara's Pocket</span>
+                </button>
+              ) : offlineProvider?.type !== 'claras-pocket' ? (
+                // If current provider is not Clara Core, offer to switch
+                showClaraCoreOffer && (
+                  <button
+                    onClick={handleSwitchToClaraCore}
+                    className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 flex items-center justify-center space-x-2"
+                  >
+                    <Server className="w-5 h-5" />
+                    <span>Switch to Clara's Pocket</span>
+                  </button>
+                )
+              ) : null}
+              
+              <button
+                onClick={() => setShowProviderOfflineModal(false)}
+                className="w-full bg-gray-500 hover:bg-gray-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200"
+              >
+                {isServiceStarting ? 'Hide' : 'Cancel'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Screen Source Picker */}
+      <ScreenSourcePicker
+        show={showScreenPicker}
+        sources={availableSources}
+        onSelect={handleScreenSourceSelect}
+        onClose={() => setShowScreenPicker(false)}
+      />
+
+      {/* Notebook Picker */}
+      <NotebookPicker
+        show={showNotebookPicker}
+        notebooks={availableNotebooks}
+        onSelect={handleNotebookSelect}
+        onClose={() => setShowNotebookPicker(false)}
+        isLoading={isLoadingNotebooks}
+      />
+
+      {/* Image Generation Widget */}
+      <ChatImageGenWidget
+        isOpen={showImageGenWidget}
+        onClose={() => setShowImageGenWidget(false)}
+        onImageGenerated={handleImageGenerated}
+        initialPrompt={input}
+        availableModels={availableImageModels}
+      />
+    </div>
+  );
+};
+
+export { AdvancedOptions };
+export default ClaraAssistantInput;
